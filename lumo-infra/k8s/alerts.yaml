@@ -1,0 +1,38 @@
+# Prometheus Operator rules for the failure modes that matter first.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata: { name: lumo-alerts, namespace: lumo }
+spec:
+  groups:
+    - name: lumo
+      rules:
+        - alert: OutboxBacklog
+          expr: max by (relay) (outbox_oldest_age_seconds) > 30
+          for: 2m
+          annotations: { summary: "Outbox {{ $labels.relay }} has events older than 30s: Kafka or relay is stuck" }
+        - alert: OutboxNoLeader
+          expr: sum by (relay) (outbox_relay_leader) == 0
+          for: 2m
+          annotations: { summary: "No pod holds the {{ $labels.relay }} outbox lease" }
+        - alert: EventsDeadLettered
+          expr: sum by (group, topic) (increase(kafka_events_dlq_total[10m])) > 0
+          annotations: { summary: "{{ $labels.group }} dead-lettered events from {{ $labels.topic }}" }
+        - alert: ConsumerRetrying
+          expr: sum by (group) (rate(kafka_events_consumed_total{result="retry"}[5m])) > 1
+          for: 5m
+          annotations: { summary: "{{ $labels.group }} is retrying events (a dependency is failing)" }
+        - alert: LedgerReconciliationFailed
+          expr: max(wallet_reconcile_problems) > 0
+          annotations: { summary: "Wallet ledger reconciliation found problems. Page finance + on-call." }
+        - alert: High5xx
+          expr: sum by (route) (rate(http_requests_total{status=~"5.."}[5m])) / sum by (route) (rate(http_requests_total[5m])) > 0.02
+          for: 5m
+          annotations: { summary: "{{ $labels.route }} 5xx rate above 2%" }
+        - alert: SlowP99
+          expr: histogram_quantile(0.99, sum by (le, route) (rate(http_request_duration_seconds_bucket[5m]))) > 1
+          for: 10m
+          annotations: { summary: "{{ $labels.route }} p99 latency above 1s" }
+        - alert: RealtimeDroppingClients
+          expr: sum(rate(realtime_slow_clients_total[5m])) > 50
+          for: 5m
+          annotations: { summary: "Realtime is dropping slow WebSocket clients" }

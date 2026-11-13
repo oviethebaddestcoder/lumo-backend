@@ -1,0 +1,24 @@
+# Settings shared by every service (non-secret).
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: lumo-common, namespace: lumo }
+data:
+  LOG_LEVEL: info
+  KAFKA_BROKERS: "b-1.your-kafka:9096,b-2.your-kafka:9096,b-3.your-kafka:9096"
+  KAFKA_SASL_MECHANISM: SCRAM-SHA-512
+  KAFKA_TLS: "true"
+  JWKS_URL: http://svc-identity/.well-known/jwks.json
+  IDENTITY_URL: http://svc-identity
+  SOCIAL_URL: http://svc-social
+---
+# Shape of the shared secret. Create the real one with your secret manager
+# (External Secrets Operator / sealed-secrets); never commit values.
+apiVersion: v1
+kind: Secret
+metadata: { name: lumo-common, namespace: lumo }
+type: Opaque
+stringData:
+  KAFKA_USERNAME: CHANGE_ME
+  KAFKA_PASSWORD: CHANGE_ME
+  REDIS_URL: rediss://default:CHANGE_ME@your-redis:6380/0
+  INTERNAL_TOKEN: CHANGE_ME

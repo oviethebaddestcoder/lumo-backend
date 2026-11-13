@@ -1,0 +1,8 @@
+.git
+**/bin
+**/.env
+**/.env.*
+**/*.md
+**/deploy
+**/coverage.out
+lumo-infra

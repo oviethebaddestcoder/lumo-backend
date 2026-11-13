@@ -1,0 +1,13 @@
+# Only the gateway (and same-namespace services for /internal calls) may reach this API.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: svc-social-api }
+spec:
+  podSelector: { matchLabels: { app: svc-social, role: api } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { lumo.app/tier: backend } }
+        - podSelector: { matchLabels: { app: svc-gateway } }
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+      ports: [{ port: 8080 }]

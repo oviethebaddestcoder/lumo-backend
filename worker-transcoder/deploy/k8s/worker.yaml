@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker-transcoder-worker
+  labels: { app: worker-transcoder, role: worker }
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  strategy: { rollingUpdate: { maxSurge: 25%, maxUnavailable: 0 } }
+  selector: { matchLabels: { app: worker-transcoder, role: worker } }
+  template:
+    metadata:
+      labels: { app: worker-transcoder, role: worker }
+      annotations: { prometheus.io/scrape: "true", prometheus.io/port: "8080" }
+    spec:
+      terminationGracePeriodSeconds: 120
+      topologySpreadConstraints:
+        - { maxSkew: 1, topologyKey: topology.kubernetes.io/zone, whenUnsatisfiable: ScheduleAnyway, labelSelector: { matchLabels: { app: worker-transcoder, role: worker } } }
+      securityContext: { runAsNonRoot: true, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: app
+          image: ghcr.io/oviethebaddestcoder/worker-transcoder:latest
+          args: ["worker"]
+          ports: [{ containerPort: 8080, name: http }]
+          envFrom:
+            - configMapRef: { name: lumo-common }
+            - secretRef: { name: lumo-common }
+            - secretRef: { name: worker-transcoder }
+          resources:
+            requests: { cpu: "2", memory: "2Gi" }
+            limits: { cpu: "4", memory: "8Gi" }
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: false, capabilities: { drop: [ALL] } }
+          readinessProbe: { httpGet: { path: /readyz, port: 8080 }, periodSeconds: 5, failureThreshold: 2 }
+          livenessProbe: { httpGet: { path: /healthz, port: 8080 }, periodSeconds: 10, failureThreshold: 3 }
+          env: [{ name: TMP_DIR, value: /scratch }]
+          volumeMounts: [{ name: scratch, mountPath: /scratch }]
+      volumes: [{ name: scratch, emptyDir: { sizeLimit: 50Gi } }]

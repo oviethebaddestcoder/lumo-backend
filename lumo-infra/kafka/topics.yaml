@@ -1,0 +1,23 @@
+# Kafka topics. Partitions cap consumer parallelism per group; start high on
+# hot topics because adding partitions later briefly breaks per-key ordering.
+# replication.factor 3 + min.insync.replicas 2 + producer acks=all = no data loss
+# when one broker dies.
+defaults:
+  replication_factor: 3
+  configs:
+    min.insync.replicas: "2"
+topics:
+  - { name: identity.users,      partitions: 24, configs: { cleanup.policy: compact } }
+  - { name: social.events,       partitions: 48, configs: { retention.ms: "604800000" } }
+  - { name: media.videos,        partitions: 24, configs: { cleanup.policy: compact } }
+  - { name: media.events,        partitions: 12, configs: { retention.ms: "604800000" } }
+  - { name: media.jobs,          partitions: 24, configs: { retention.ms: "259200000" } }
+  - { name: media.job_results,   partitions: 12, configs: { retention.ms: "259200000" } }
+  - { name: live.events,         partitions: 12, configs: { retention.ms: "604800000" } }
+  - { name: live.pk,             partitions: 12, configs: { retention.ms: "604800000" } }
+  - { name: chat.messages,       partitions: 48, configs: { retention.ms: "259200000" } }
+  - { name: wallet.gifts,        partitions: 48, configs: { retention.ms: "2592000000" } }
+  - { name: wallet.events,       partitions: 12, configs: { retention.ms: "2592000000" } }
+  - { name: moderation.actions,  partitions: 6,  configs: { retention.ms: "2592000000" } }
+  - { name: feed.impressions,    partitions: 48, configs: { retention.ms: "259200000" } }
+# Every topic also gets <name>.dlq (3 partitions, 14 days) via create-topics.sh.

@@ -1,0 +1,28 @@
+# One Argo CD Application per service repo: each deploys independently from
+# its own deploy/k8s folder. CI pushes images; bump tags here (or use the
+# Argo CD Image Updater).
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata: { name: lumo-services, namespace: argocd }
+spec:
+  generators:
+    - list:
+        elements:
+          - { svc: svc-gateway }
+          - { svc: svc-identity }
+          - { svc: svc-wallet }
+          - { svc: svc-live }
+          - { svc: svc-realtime }
+          - { svc: svc-social }
+          - { svc: svc-media }
+          - { svc: worker-transcoder }
+          - { svc: svc-feed }
+          - { svc: svc-notifier }
+          - { svc: svc-moderation }
+  template:
+    metadata: { name: "{{svc}}" }
+    spec:
+      project: default
+      source: { repoURL: "https://github.com/oviethebaddestcoder/lumo-backend/{{svc}}", targetRevision: main, path: deploy/k8s }
+      destination: { server: https://kubernetes.default.svc, namespace: lumo }
+      syncPolicy: { automated: { prune: true, selfHeal: true }, syncOptions: [CreateNamespace=true] }

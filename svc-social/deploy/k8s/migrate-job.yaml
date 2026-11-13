@@ -1,0 +1,20 @@
+# Run before each rollout (Argo CD PreSync hook). Uses DATABASE_URL_DIRECT
+# (Neon direct endpoint) because migrations take a session advisory lock.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: svc-social-migrate
+  annotations: { argocd.argoproj.io/hook: PreSync, argocd.argoproj.io/hook-delete-policy: BeforeHookCreation }
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: ghcr.io/oviethebaddestcoder/svc-social:latest
+          args: ["migrate"]
+          envFrom:
+            - configMapRef: { name: lumo-common }
+            - secretRef: { name: lumo-common }
+            - secretRef: { name: svc-social }

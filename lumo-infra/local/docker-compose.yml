@@ -1,0 +1,45 @@
+# Local development stack. Postgres stands in for Neon (same wire protocol);
+# Redpanda stands in for Kafka (same protocol); MinIO for R2/S3.
+#   docker compose -f local/docker-compose.yml up -d
+#   KAFKA_BROKERS=localhost:19092 RF=1 scripts/create-topics.sh
+# Then run each service from its own repo with `go run ./cmd/<name> serve|worker`.
+name: lumo
+services:
+  postgres:
+    image: postgres:16
+    environment: { POSTGRES_PASSWORD: postgres }
+    ports: ["5432:5432"]
+    volumes: ["./postgres-init.sql:/docker-entrypoint-initdb.d/init.sql:ro", "pg:/var/lib/postgresql/data"]
+    healthcheck: { test: ["CMD", "pg_isready", "-U", "postgres"], interval: 5s }
+  redis:
+    image: redis:7
+    ports: ["6379:6379"]
+  redpanda:
+    image: redpandadata/redpanda:latest
+    command: >
+      redpanda start --mode dev-container --smp 1
+      --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+    ports: ["19092:19092"]
+  console:
+    image: redpandadata/console:latest
+    environment: { KAFKA_BROKERS: redpanda:9092 }
+    ports: ["8090:8080"]
+    depends_on: [redpanda]
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address :9001
+    environment: { MINIO_ROOT_USER: lumo, MINIO_ROOT_PASSWORD: lumo-secret }
+    ports: ["9000:9000", "9001:9001"]
+    volumes: ["minio:/data"]
+  minio-init:
+    image: minio/mc:latest
+    depends_on: [minio]
+    entrypoint: >
+      sh -c "sleep 3 && mc alias set l http://minio:9000 lumo lumo-secret &&
+             mc mb -p l/lumo-media && mc anonymous set download l/lumo-media/hls"
+  livekit:
+    image: livekit/livekit-server:latest
+    command: --dev --bind 0.0.0.0
+    ports: ["7880:7880", "7881:7881", "7882:7882/udp"]
+volumes: { pg: {}, minio: {} }

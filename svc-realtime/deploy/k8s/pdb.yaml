@@ -1,0 +1,6 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: svc-realtime-api }
+spec:
+  minAvailable: 66%
+  selector: { matchLabels: { app: svc-realtime, role: api } }

@@ -1,0 +1,10 @@
+bin/
+**/bin/
+.env
+.env.*
+!.env.example
+*.test
+coverage.out
+.secrets.env
+.idea/
+.vscode/
