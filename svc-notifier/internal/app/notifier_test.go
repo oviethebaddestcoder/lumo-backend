@@ -95,7 +95,7 @@ func TestLiveFanout(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	s.SetPrefs(ctx, followers[3], app.Prefs{NewFollower: true, Comments: true, Likes: true, Live: false})
+	s.SetPrefs(ctx, followers[3], app.Prefs{NewFollower: true, Comments: true, Likes: true, Live: false, Messages: true})
 
 	ev := events.MustNew("svc-live", events.RoomStarted, "room", events.RoomStartedData{RoomID: "room", HostID: host, Title: "Karaoke", StartedAt: time.Now()})
 	if err := s.OnLive(ctx, ev); err != nil {
@@ -118,5 +118,47 @@ func TestLiveFanout(t *testing.T) {
 	pool.QueryRow(ctx, `SELECT count(*) FROM devices WHERE token LIKE 'dead%'`).Scan(&dead)
 	if dead != 0 {
 		t.Fatal("dead token not removed")
+	}
+
+	// Inbox: a follow and a comment land in the creator's inbox; live does not.
+	fan := followers[10]
+	s.OnSocial(ctx, events.MustNew("svc-social", events.Followed, host, events.FollowData{FollowerID: fan, FolloweeID: host}))
+	s.OnSocial(ctx, events.MustNew("svc-social", events.Commented, "v1", events.CommentData{CommentID: "c1", VideoID: "v1", UserID: fan, OwnerID: host, Text: "fire"}))
+	s.OnWallet(ctx, events.MustNew("svc-wallet", events.PayoutSettled, host, events.PayoutSettledData{PayoutID: "p1", UserID: host, Diamonds: 100, AmountKobo: 5050, Status: "paid"}))
+	items, _, err := s.Inbox(ctx, host, "", 10)
+	if err != nil || len(items) != 3 || items[0].Kind != "payout" || items[2].Kind != "follow" || items[0].Read {
+		t.Fatalf("inbox %v %+v", err, items)
+	}
+	if items[0].Body != "₦50.50 is on its way to your bank account." {
+		t.Fatalf("payout body %q", items[0].Body)
+	}
+	if n, _ := s.Unread(ctx, host); n != 3 {
+		t.Fatalf("unread %d", n)
+	}
+	s.MarkRead(ctx, host)
+	if n, _ := s.Unread(ctx, host); n != 0 {
+		t.Fatalf("unread after mark %d", n)
+	}
+	if fanItems, _, _ := s.Inbox(ctx, fan, "", 10); len(fanItems) != 0 {
+		t.Fatalf("live fan-out wrote inbox rows: %d", len(fanItems))
+	}
+
+	// DM push: one per conversation burst, respects the messages preference.
+	sum := func() (n int) {
+		snd.mu.Lock()
+		defer snd.mu.Unlock()
+		for _, v := range snd.sent {
+			n += v
+		}
+		return n
+	}
+	before := sum()
+	dm := func(id string) events.Envelope {
+		return events.MustNew("svc-messaging", events.DMSent, "conv1", events.DMSentData{MessageID: id, ConversationID: "conv1", SenderID: fan, RecipientID: followers[20], Preview: "hey"})
+	}
+	s.OnDM(ctx, dm("m1"))
+	s.OnDM(ctx, dm("m2")) // within 30 s: collapsed
+	if sum() != before+1 {
+		t.Fatalf("dm pushes: %d new, want 1", sum()-before)
 	}
 }

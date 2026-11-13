@@ -20,4 +20,5 @@ topics:
   - { name: wallet.events,       partitions: 12, configs: { retention.ms: "2592000000" } }
   - { name: moderation.actions,  partitions: 6,  configs: { retention.ms: "2592000000" } }
   - { name: feed.impressions,    partitions: 48, configs: { retention.ms: "259200000" } }
+  - { name: dm.messages,         partitions: 48, configs: { retention.ms: "259200000" } }
 # Every topic also gets <name>.dlq (3 partitions, 14 days) via create-topics.sh.

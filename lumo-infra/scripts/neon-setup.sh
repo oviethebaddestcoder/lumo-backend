@@ -5,7 +5,7 @@
 # (measure latency from your users; see README "Regions").
 set -euo pipefail
 REGION="${REGION:-aws-eu-central-1}"
-for svc in identity wallet live social media notifier moderation; do
+for svc in identity wallet live social media notifier moderation messaging; do
   name="lumo-$svc"
   echo "== $name"
   neonctl projects create --name "$name" --region-id "$REGION" --output json > "/tmp/$name.json"

@@ -105,8 +105,8 @@ func TestFollowLikeCountsAndBlocks(t *testing.T) {
 	}
 	c, _ := s.UserCounts(ctx, star)
 	vc, _ := s.VideoCounts(ctx, "", []string{video})
-	if c.Followers != 40 || vc[0].Likes != 40 {
-		t.Fatalf("followers=%d likes=%d", c.Followers, vc[0].Likes)
+	if c.Followers != 40 || vc[0].Likes != 40 || c.LikesReceived != 40 {
+		t.Fatalf("followers=%d likes=%d received=%d", c.Followers, vc[0].Likes, c.LikesReceived)
 	}
 	list, next, _ := s.List(ctx, star, "followers", "", 25)
 	if len(list) != 25 || next == "" {

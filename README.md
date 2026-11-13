@@ -14,15 +14,16 @@ Any folder can later be moved into its own repo.
 | Folder | What it owns |
 |---|---|
 | `svc-gateway` | Public edge: JWT check, rate limits, routing, WebSocket proxy |
-| `svc-identity` | Accounts; OTP, password and Google/Apple/Facebook/X/LINE/Kakao sign-in; QR login; sessions |
-| `svc-wallet` | Coins and diamonds: double-entry ledger, gifts, store receipts, payouts (sharded Neon) |
+| `svc-identity` | Accounts; OTP, password and Google/Apple/Facebook/X/LINE/Kakao sign-in; QR login; sessions; people search |
+| `svc-wallet` | Coins and diamonds: double-entry ledger, gifts, store receipts, levels, backpack and daily check-in, bank cash-outs via Paystack with finance approval (sharded Neon) |
 | `svc-live` | Live rooms, LiveKit tokens, RTMP ingress, HLS egress, PK battles |
-| `svc-realtime` | Room WebSockets (chat, gifts, viewers, PK scores) with Redis fan-out |
-| `svc-social` | Follows, likes, comments, blocks, reports |
-| `svc-media` | Video uploads (S3 multipart), metadata |
+| `svc-realtime` | Room WebSockets (chat, gifts, viewers, PK scores) and each user's personal channel (DMs), with Redis fan-out |
+| `svc-social` | Follows, likes (and likes received per creator), comments, blocks, reports |
+| `svc-media` | Video uploads (S3 multipart), metadata, view counts, hashtag pages, profile photo uploads |
 | `worker-transcoder` | ffmpeg HLS ladder |
 | `svc-feed` | For You, Following and Watch feeds |
-| `svc-notifier` | Push through FCM and notification preferences |
+| `svc-notifier` | Push through FCM, notification preferences, the in-app activity inbox |
+| `svc-messaging` | Direct messages: chats, read receipts, unsend, block-aware, live delivery on `/v1/rt/me` |
 | `svc-moderation` | Report queue and enforcement |
 | `lumo-kit`, `lumo-contracts` | Shared platform code and event schemas |
 | `lumo-infra` | Kafka topics, local docker-compose, Kubernetes base, scripts, **architecture docs** |

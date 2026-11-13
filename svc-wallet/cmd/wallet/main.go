@@ -67,6 +67,7 @@ func load() (cfg, error) {
 	c.svc = &wapp.Service{
 		DiamondPercent: e.Int64("DIAMONDS_PER_100_COINS", 50),
 		MinPayout:      e.Int64("MIN_PAYOUT_DIAMONDS", 10_000),
+		KoboPerDiamond: e.Int64("PAYOUT_KOBO_PER_DIAMOND", 50),
 		AccountSecret:  e.Base64("ACCOUNT_TAG_SECRET", true),
 	}
 	if c.shardsDir == "" {

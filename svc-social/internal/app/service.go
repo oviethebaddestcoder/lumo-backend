@@ -163,13 +163,14 @@ func (s *Service) FollowingIDs(ctx context.Context, userID string, limit int) ([
 }
 
 type Counts struct {
-	Followers int64 `json:"followers"`
-	Following int64 `json:"following"`
+	Followers     int64 `json:"followers"`
+	Following     int64 `json:"following"`
+	LikesReceived int64 `json:"likes_received"`
 }
 
 func (s *Service) UserCounts(ctx context.Context, userID string) (Counts, error) {
 	var c Counts
-	err := s.Pool.QueryRow(ctx, `SELECT followers, following FROM user_counts WHERE user_id = $1`, userID).Scan(&c.Followers, &c.Following)
+	err := s.Pool.QueryRow(ctx, `SELECT followers, following, likes_received FROM user_counts WHERE user_id = $1`, userID).Scan(&c.Followers, &c.Following, &c.LikesReceived)
 	if db.IsNoRows(err) {
 		return c, nil
 	}
@@ -364,8 +365,14 @@ func (s *Service) Block(ctx context.Context, blocker, blocked string, block bool
 		return ErrSelf
 	}
 	if !block {
-		_, err := s.Pool.Exec(ctx, `DELETE FROM blocks WHERE blocker_id = $1 AND blocked_id = $2`, blocker, blocked)
-		return err
+		return db.InTx(ctx, s.Pool, func(tx pgx.Tx) error {
+			tag, err := tx.Exec(ctx, `DELETE FROM blocks WHERE blocker_id = $1 AND blocked_id = $2`, blocker, blocked)
+			if err != nil || tag.RowsAffected() == 0 {
+				return err
+			}
+			return outbox.Insert(ctx, tx, events.TopicSocialEvents, events.MustNew(producer, events.Unblocked, blocked,
+				events.BlockData{BlockerID: blocker, BlockedID: blocked}))
+		})
 	}
 	if err := db.InTx(ctx, s.Pool, func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `INSERT INTO blocks (blocker_id, blocked_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, blocker, blocked)
@@ -403,8 +410,8 @@ func (s *Service) Report(ctx context.Context, reporter string, in events.ReportD
 // ApplyCounts is the batch consumer of this service's own social.events.
 // One UPDATE per user/video per batch, deduped per event.
 func (s *Service) ApplyCounts(ctx context.Context, envs []events.Envelope) error {
-	type delta struct{ a, b int64 }
-	users := map[string]*delta{}  // followers, following
+	type delta struct{ a, b, c int64 }
+	users := map[string]*delta{}  // followers, following, likes received
 	videos := map[string]*delta{} // likes, comments
 	ids := make([]string, 0, len(envs))
 	bump := func(m map[string]*delta, k string, a, b int64) {
@@ -415,6 +422,13 @@ func (s *Service) ApplyCounts(ctx context.Context, envs []events.Envelope) error
 		}
 		d.a += a
 		d.b += b
+	}
+	bumpLikesReceived := func(owner string, n int64) {
+		if owner == "" {
+			return
+		}
+		bump(users, owner, 0, 0)
+		users[owner].c += n
 	}
 	return db.InTx(ctx, s.Pool, func(tx pgx.Tx) error {
 		ids = ids[:0]
@@ -462,6 +476,7 @@ func (s *Service) ApplyCounts(ctx context.Context, envs []events.Envelope) error
 					n = -1
 				}
 				bump(videos, l.VideoID, n, 0)
+				bumpLikesReceived(l.OwnerID, n)
 			case events.Commented, events.CommentDeleted:
 				var c events.CommentData
 				if e.Decode(&c) != nil {
@@ -476,9 +491,10 @@ func (s *Service) ApplyCounts(ctx context.Context, envs []events.Envelope) error
 		}
 		for _, k := range sortedKeys(users) {
 			d := users[k]
-			if _, err := tx.Exec(ctx, `INSERT INTO user_counts (user_id, followers, following) VALUES ($1, GREATEST($2, 0), GREATEST($3, 0))
-				ON CONFLICT (user_id) DO UPDATE SET followers = GREATEST(user_counts.followers + $2, 0), following = GREATEST(user_counts.following + $3, 0)`,
-				k, d.a, d.b); err != nil {
+			if _, err := tx.Exec(ctx, `INSERT INTO user_counts (user_id, followers, following, likes_received) VALUES ($1, GREATEST($2, 0), GREATEST($3, 0), GREATEST($4, 0))
+				ON CONFLICT (user_id) DO UPDATE SET followers = GREATEST(user_counts.followers + $2, 0), following = GREATEST(user_counts.following + $3, 0),
+					likes_received = GREATEST(user_counts.likes_received + $4, 0)`,
+				k, d.a, d.b, d.c); err != nil {
 				return err
 			}
 		}

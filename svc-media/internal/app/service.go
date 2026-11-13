@@ -57,18 +57,19 @@ type Video struct {
 	DurationMS   int64      `json:"duration_ms"`
 	Width        int        `json:"width"`
 	Height       int        `json:"height"`
+	Views        int64      `json:"views"`
 	CreatedAt    time.Time  `json:"created_at"`
 	PublishedAt  *time.Time `json:"published_at,omitempty"`
 	sourceKey    string
 }
 
 const videoCols = `id::text, owner_id::text, kind, status, visibility, title, description, hashtags, hls_url, thumbnail_url,
-	duration_ms, width, height, created_at, published_at, source_key`
+	duration_ms, width, height, views, created_at, published_at, source_key`
 
 func scanVideo(r pgx.Row) (Video, error) {
 	var v Video
 	err := r.Scan(&v.ID, &v.OwnerID, &v.Kind, &v.Status, &v.Visibility, &v.Title, &v.Description, &v.Hashtags, &v.HLSURL,
-		&v.ThumbnailURL, &v.DurationMS, &v.Width, &v.Height, &v.CreatedAt, &v.PublishedAt, &v.sourceKey)
+		&v.ThumbnailURL, &v.DurationMS, &v.Width, &v.Height, &v.Views, &v.CreatedAt, &v.PublishedAt, &v.sourceKey)
 	if db.IsNoRows(err) {
 		return v, errs.ErrNotFound
 	}

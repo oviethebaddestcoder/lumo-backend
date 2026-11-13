@@ -358,3 +358,94 @@ func truncate(b []byte) string {
 	}
 	return string(b)
 }
+
+// ---- Paystack transfers (cash-outs) ----
+
+type Bank struct {
+	Code string `json:"code"`
+	Name string `json:"name"`
+}
+
+// Banks lists Nigerian banks that support NUBAN transfers.
+func (p *Paystack) Banks(ctx context.Context) ([]Bank, error) {
+	var out struct {
+		Status bool `json:"status"`
+		Data   []struct {
+			Code   string `json:"code"`
+			Name   string `json:"name"`
+			Active bool   `json:"active"`
+		} `json:"data"`
+	}
+	if err := p.do(ctx, http.MethodGet, "/bank?country=nigeria&perPage=200", nil, &out); err != nil {
+		return nil, err
+	}
+	banks := make([]Bank, 0, len(out.Data))
+	for _, b := range out.Data {
+		if b.Active && b.Code != "" {
+			banks = append(banks, Bank{Code: b.Code, Name: b.Name})
+		}
+	}
+	return banks, nil
+}
+
+// ResolveAccount returns the account holder's name for a NUBAN.
+func (p *Paystack) ResolveAccount(ctx context.Context, accountNumber, bankCode string) (string, error) {
+	var out struct {
+		Status bool `json:"status"`
+		Data   struct {
+			AccountName string `json:"account_name"`
+		} `json:"data"`
+		Message string `json:"message"`
+	}
+	q := "/bank/resolve?account_number=" + url.QueryEscape(accountNumber) + "&bank_code=" + url.QueryEscape(bankCode)
+	if err := p.do(ctx, http.MethodGet, q, nil, &out); err != nil {
+		return "", ErrInvalid
+	}
+	if !out.Status || out.Data.AccountName == "" {
+		return "", ErrInvalid
+	}
+	return out.Data.AccountName, nil
+}
+
+// CreateRecipient registers a bank account as a transfer recipient.
+func (p *Paystack) CreateRecipient(ctx context.Context, name, accountNumber, bankCode string) (string, error) {
+	body, _ := json.Marshal(map[string]string{
+		"type": "nuban", "name": name, "account_number": accountNumber, "bank_code": bankCode, "currency": "NGN",
+	})
+	var out struct {
+		Status bool `json:"status"`
+		Data   struct {
+			RecipientCode string `json:"recipient_code"`
+		} `json:"data"`
+		Message string `json:"message"`
+	}
+	if err := p.do(ctx, http.MethodPost, "/transferrecipient", body, &out); err != nil {
+		return "", err
+	}
+	if !out.Status || out.Data.RecipientCode == "" {
+		return "", fmt.Errorf("paystack: %s", out.Message)
+	}
+	return out.Data.RecipientCode, nil
+}
+
+// Transfer sends money from the Paystack balance. reference makes the call
+// idempotent on Paystack's side: retrying with the same reference never pays twice.
+func (p *Paystack) Transfer(ctx context.Context, amountKobo int64, recipient, reference, reason string) (string, error) {
+	body, _ := json.Marshal(map[string]any{
+		"source": "balance", "amount": amountKobo, "recipient": recipient, "reference": reference, "reason": reason, "currency": "NGN",
+	})
+	var out struct {
+		Status bool `json:"status"`
+		Data   struct {
+			Status string `json:"status"` // success | pending | otp | failed
+		} `json:"data"`
+		Message string `json:"message"`
+	}
+	if err := p.do(ctx, http.MethodPost, "/transfer", body, &out); err != nil {
+		return "", err
+	}
+	if !out.Status {
+		return "", fmt.Errorf("paystack transfer: %s", out.Message)
+	}
+	return out.Data.Status, nil
+}

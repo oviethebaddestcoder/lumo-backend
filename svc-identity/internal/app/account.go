@@ -480,3 +480,20 @@ func maskPhone(p *string) *string {
 	m := (*p)[:4] + strings.Repeat("•", len(*p)-7) + (*p)[len(*p)-3:]
 	return &m
 }
+
+// SearchUsers powers the app's search box (people tab).
+func (s *Service) SearchUsers(ctx context.Context, q string) ([]events.UserPublic, error) {
+	q = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(q), "@"))
+	if len([]rune(q)) < 2 || len(q) > 30 {
+		return []events.UserPublic{}, nil
+	}
+	us, err := store.SearchUsers(ctx, s.Pool, q, 20)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]events.UserPublic, 0, len(us))
+	for _, u := range us {
+		out = append(out, u.Public(s.now()))
+	}
+	return out, nil
+}

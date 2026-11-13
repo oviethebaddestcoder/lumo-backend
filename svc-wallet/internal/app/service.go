@@ -57,6 +57,8 @@ type Service struct {
 	// DiamondPercent: diamonds a host receives per 100 coins of gifts.
 	DiamondPercent int64
 	MinPayout      int64
+	// KoboPerDiamond converts diamonds to naira for bank cash-outs.
+	KoboPerDiamond int64
 	AccountSecret  []byte // for Google obfuscatedAccountId tags
 
 	Google   *stores.GooglePlay
@@ -155,6 +157,8 @@ type SendGiftInput struct {
 	Qty        int    `json:"qty"`
 	RoomID     string `json:"room_id,omitempty"`
 	VideoID    string `json:"video_id,omitempty"`
+	// FromBackpack spends a free backpack gift instead of coins.
+	FromBackpack bool `json:"from_backpack,omitempty"`
 }
 
 type GiftReceipt struct {
@@ -186,6 +190,9 @@ func (s *Service) SendGift(ctx context.Context, in SendGiftInput) (GiftReceipt, 
 	}
 	if !ok {
 		return GiftReceipt{}, ErrGiftUnknown
+	}
+	if in.FromBackpack {
+		return s.sendFromBackpack(ctx, in, g)
 	}
 	cost := g.Coins * int64(in.Qty)
 	diamonds := cost * s.DiamondPercent / 100
@@ -228,6 +235,9 @@ func (s *Service) SendGift(ctx context.Context, in SendGiftInput) (GiftReceipt, 
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO gift_sends (id, sender_id, receiver_id, room_id, video_id, gift_id, qty, coins, diamonds)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, sendID, in.SenderID, in.ReceiverID, in.RoomID, in.VideoID, g.ID, in.Qty, cost, diamonds); err != nil {
+			return err
+		}
+		if err := addCoinsSpent(ctx, tx, in.SenderID, cost); err != nil {
 			return err
 		}
 		ev := events.MustNew(producer, events.GiftSent, in.ReceiverID, events.GiftSentData{
@@ -603,7 +613,20 @@ func (s *Service) RequestPayout(ctx context.Context, userID, requestID string, d
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO payouts (id, user_id, diamonds) VALUES ($1, $2, $3)`, pid, userID, diamonds); err != nil {
+		var recipient, label *string
+		if s.Paystack != nil {
+			var rc, l string
+			err := tx.QueryRow(ctx, `SELECT recipient_code, bank_name || ' ••' || account_last4 FROM payout_accounts WHERE user_id = $1`, userID).Scan(&rc, &l)
+			if db.IsNoRows(err) {
+				return ErrNoPayoutAccount
+			}
+			if err != nil {
+				return err
+			}
+			recipient, label = &rc, &l
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO payouts (id, user_id, diamonds, amount_kobo, recipient_code, bank_label)
+			VALUES ($1, $2, $3, $4, $5, COALESCE($6, ''))`, pid, userID, diamonds, diamonds*s.KoboPerDiamond, recipient, label); err != nil {
 			return err
 		}
 		res = PayoutResult{PayoutID: pid, Status: "pending_review", Balance: bal - diamonds}

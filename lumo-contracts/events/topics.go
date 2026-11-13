@@ -17,6 +17,7 @@ const (
 	TopicWalletEvents  = "wallet.events" // key: user_id   purchases, payouts, credits
 	TopicModeration    = "moderation.actions"
 	TopicFeedSignals   = "feed.impressions" // key: user_id
+	TopicDMMessages    = "dm.messages"      // key: conversation_id
 )
 
 // DLQ returns the dead-letter topic for a topic.
@@ -41,4 +42,5 @@ var AllTopics = []struct {
 	{TopicWalletEvents, false, "30d"},
 	{TopicModeration, false, "30d"},
 	{TopicFeedSignals, false, "3d"},
+	{TopicDMMessages, false, "3d"},
 }

@@ -55,6 +55,7 @@ func serve(ctx context.Context) error {
 	v := &auth.Verifier{Keys: auth.NewRemoteJWKS(jwks)}
 	mux := http.NewServeMux()
 	mux.Handle("GET /v1/rt/rooms/{id}", v.Middleware(true, true)(h.ServeRoom(origins)))
+	mux.Handle("GET /v1/rt/me", v.Middleware(true, true)(h.ServeMe(origins)))
 	srv := httpx.NewServer(addr, mux, httpx.Check{Name: "redis", Fn: func(ctx context.Context) error { return rdb.Ping(ctx).Err() }})
 	return app.Group(ctx, h.Run, srv.Run)
 }

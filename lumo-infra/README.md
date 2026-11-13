@@ -24,7 +24,8 @@ runtime: topics, local stack, Kubernetes base, alerts, scripts, docs.
 | `svc-media` | uploads, video lifecycle | Neon `media` + R2/S3 | `media.videos`, `media.events`, `media.jobs` |
 | `worker-transcoder` | ffmpeg HLS ladder | R2/S3 | `media.job_results` |
 | `svc-feed` | For You / Following / Watch | Redis (projection) | `feed.impressions` |
-| `svc-notifier` | push notifications (FCM/APNs) | Neon `notifier` | consumes only |
+| `svc-notifier` | push notifications (FCM/APNs), activity inbox | Neon `notifier` | consumes only |
+| `svc-messaging` | 1:1 direct messages, read receipts | Neon `messaging` + Redis (live delivery) | `dm.messages` |
 | `svc-moderation` | report queue, moderator actions | Neon `moderation` | `moderation.actions` |
 
 No service reads another's database. A service that needs another's data

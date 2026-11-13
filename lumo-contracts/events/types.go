@@ -16,6 +16,7 @@ const (
 	Commented      = "social.comment.created"
 	CommentDeleted = "social.comment.deleted"
 	Blocked        = "social.block.created"
+	Unblocked      = "social.block.deleted"
 	Reported       = "social.report.created"
 
 	VideoState    = "media.video.state" // full snapshot on media.videos
@@ -38,11 +39,14 @@ const (
 	CoinsPurchased   = "wallet.coins.purchased"
 	CoinsReversed    = "wallet.coins.reversed"
 	PayoutRequested  = "wallet.payout.requested"
+	PayoutSettled    = "wallet.payout.settled"
 	DiamondsCredited = "wallet.diamonds.credited"
 
 	ModerationAction = "moderation.action.taken"
 
 	Impression = "feed.impression.recorded"
+
+	DMSent = "dm.message.sent"
 )
 
 // ---- identity ----
@@ -216,6 +220,9 @@ type GiftSentData struct {
 	Coins      int64     `json:"coins"`
 	Diamonds   int64     `json:"diamonds"`
 	SentAt     time.Time `json:"sent_at"`
+	// FromBackpack gifts were free (daily rewards): they count toward PK
+	// scores and goals but pay the receiver no diamonds.
+	FromBackpack bool `json:"from_backpack,omitempty"`
 }
 
 type CoinsPurchasedData struct {
@@ -238,6 +245,16 @@ type PayoutRequestedData struct {
 	PayoutID string `json:"payout_id"`
 	UserID   string `json:"user_id"`
 	Diamonds int64  `json:"diamonds"`
+}
+
+// PayoutSettledData is sent when a cash-out is paid, rejected or fails.
+type PayoutSettledData struct {
+	PayoutID   string `json:"payout_id"`
+	UserID     string `json:"user_id"`
+	Diamonds   int64  `json:"diamonds"`
+	AmountKobo int64  `json:"amount_kobo"`
+	Status     string `json:"status"` // paid | rejected | failed
+	Reason     string `json:"reason,omitempty"`
 }
 
 type DiamondsCreditedData struct {
@@ -266,4 +283,16 @@ type ImpressionData struct {
 	VideoID string    `json:"video_id"`
 	WatchMS int64     `json:"watch_ms"`
 	At      time.Time `json:"at"`
+}
+
+// ---- direct messages ----
+
+// DMSentData lets the notifier push "new message" to the recipient.
+type DMSentData struct {
+	MessageID      string    `json:"message_id"`
+	ConversationID string    `json:"conversation_id"`
+	SenderID       string    `json:"sender_id"`
+	RecipientID    string    `json:"recipient_id"`
+	Preview        string    `json:"preview"`
+	SentAt         time.Time `json:"sent_at"`
 }

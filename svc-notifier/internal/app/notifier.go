@@ -117,12 +117,13 @@ type Prefs struct {
 	Comments    bool `json:"comments"`
 	Likes       bool `json:"likes"`
 	Live        bool `json:"live"`
+	Messages    bool `json:"messages"`
 }
 
 func (s *Service) GetPrefs(ctx context.Context, userID string) (Prefs, error) {
-	p := Prefs{true, true, true, true}
-	err := s.Pool.QueryRow(ctx, `SELECT new_follower, comments, likes, live FROM prefs WHERE user_id = $1`, userID).
-		Scan(&p.NewFollower, &p.Comments, &p.Likes, &p.Live)
+	p := Prefs{true, true, true, true, true}
+	err := s.Pool.QueryRow(ctx, `SELECT new_follower, comments, likes, live, messages FROM prefs WHERE user_id = $1`, userID).
+		Scan(&p.NewFollower, &p.Comments, &p.Likes, &p.Live, &p.Messages)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return p, nil
 	}
@@ -130,14 +131,16 @@ func (s *Service) GetPrefs(ctx context.Context, userID string) (Prefs, error) {
 }
 
 func (s *Service) SetPrefs(ctx context.Context, userID string, p Prefs) error {
-	_, err := s.Pool.Exec(ctx, `INSERT INTO prefs (user_id, new_follower, comments, likes, live) VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT (user_id) DO UPDATE SET new_follower = $2, comments = $3, likes = $4, live = $5`, userID, p.NewFollower, p.Comments, p.Likes, p.Live)
+	_, err := s.Pool.Exec(ctx, `INSERT INTO prefs (user_id, new_follower, comments, likes, live, messages) VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (user_id) DO UPDATE SET new_follower = $2, comments = $3, likes = $4, live = $5, messages = $6`,
+		userID, p.NewFollower, p.Comments, p.Likes, p.Live, p.Messages)
 	return err
 }
 
 // ---- sending ----
 
-var prefColumn = map[string]string{"follow": "new_follower", "comment": "comments", "like": "likes", "live": "live"}
+// "account" (cash-outs, security) ignores preferences.
+var prefColumn = map[string]string{"follow": "new_follower", "comment": "comments", "like": "likes", "live": "live", "message": "messages", "account": ""}
 
 // sendTo pushes to every device of the given users who allow this kind.
 func (s *Service) sendTo(ctx context.Context, kind string, userIDs []string, p Push) error {
@@ -145,8 +148,12 @@ func (s *Service) sendTo(ctx context.Context, kind string, userIDs []string, p P
 	if !ok || len(userIDs) == 0 {
 		return nil
 	}
+	allow := "true"
+	if col != "" {
+		allow = "COALESCE(p." + col + ", true)"
+	}
 	rows, err := s.Pool.Query(ctx, `SELECT d.token FROM devices d LEFT JOIN prefs p ON p.user_id = d.user_id
-		WHERE d.user_id = ANY($1::uuid[]) AND COALESCE(p.`+col+`, true)`, userIDs)
+		WHERE d.user_id = ANY($1::uuid[]) AND `+allow, userIDs)
 	if err != nil {
 		return err
 	}
@@ -197,16 +204,23 @@ func (s *Service) OnSocial(ctx context.Context, e events.Envelope) error {
 			return nil
 		}
 		u, _ := s.Users.Get(ctx, f.FollowerID)
-		return s.sendTo(ctx, "follow", []string{f.FolloweeID}, Push{Title: u.DisplayName, Body: "started following you",
-			Data: map[string]string{"type": "follow", "user_id": f.FollowerID}})
+		p := Push{Title: u.DisplayName, Body: "started following you", Data: map[string]string{"type": "follow", "user_id": f.FollowerID}}
+		if err := s.addInbox(ctx, f.FolloweeID, "follow", f.FollowerID, p); err != nil {
+			return err
+		}
+		return s.sendTo(ctx, "follow", []string{f.FolloweeID}, p)
 	case events.Commented:
 		var c events.CommentData
 		if e.Decode(&c) != nil || c.UserID == c.OwnerID {
 			return nil
 		}
 		u, _ := s.Users.Get(ctx, c.UserID)
-		return s.sendTo(ctx, "comment", []string{c.OwnerID}, Push{Title: u.DisplayName + " commented", Body: truncate(c.Text, 120),
-			Data: map[string]string{"type": "comment", "video_id": c.VideoID, "comment_id": c.CommentID}})
+		p := Push{Title: u.DisplayName + " commented", Body: truncate(c.Text, 120),
+			Data: map[string]string{"type": "comment", "video_id": c.VideoID, "comment_id": c.CommentID}}
+		if err := s.addInbox(ctx, c.OwnerID, "comment", c.UserID, p); err != nil {
+			return err
+		}
+		return s.sendTo(ctx, "comment", []string{c.OwnerID}, p)
 	case events.Liked:
 		var l events.LikeData
 		if e.Decode(&l) != nil || l.UserID == l.OwnerID {
@@ -220,8 +234,12 @@ func (s *Service) OnSocial(ctx context.Context, e events.Envelope) error {
 		if !isMilestone(n) {
 			return nil
 		}
-		return s.sendTo(ctx, "like", []string{l.OwnerID}, Push{Title: "Your video is taking off", Body: fmt.Sprintf("%d people liked your video", n),
-			Data: map[string]string{"type": "likes", "video_id": l.VideoID}})
+		p := Push{Title: "Your video is taking off", Body: fmt.Sprintf("%d people liked your video", n),
+			Data: map[string]string{"type": "likes", "video_id": l.VideoID}}
+		if err := s.addInbox(ctx, l.OwnerID, "likes", "", p); err != nil {
+			return err
+		}
+		return s.sendTo(ctx, "like", []string{l.OwnerID}, p)
 	}
 	return nil
 }

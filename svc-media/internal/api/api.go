@@ -28,6 +28,8 @@ func (a *API) Routes() http.Handler {
 	mux.Handle("PATCH /v1/media/videos/{id}", priv(a.update))
 	mux.Handle("DELETE /v1/media/videos/{id}", priv(a.remove))
 	mux.Handle("GET /v1/media/users/{id}/videos", opt(a.byOwner))
+	mux.Handle("GET /v1/media/hashtags/{tag}/videos", opt(a.byHashtag))
+	mux.Handle("POST /v1/media/images", priv(a.image))
 	return httpx.Chain(mux, httpx.Timeout(20*time.Second))
 }
 
@@ -125,5 +127,30 @@ func (a *API) byOwner(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	httpx.JSON(w, http.StatusOK, httpx.Page[app.Video]{Items: items, NextCursor: next})
+	return nil
+}
+
+func (a *API) byHashtag(w http.ResponseWriter, r *http.Request) error {
+	q := r.URL.Query()
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	items, next, err := a.Svc.ByHashtag(r.Context(), r.PathValue("tag"), q.Get("cursor"), limit)
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, httpx.Page[app.Video]{Items: items, NextCursor: next})
+	return nil
+}
+
+func (a *API) image(w http.ResponseWriter, r *http.Request) error {
+	p, _ := auth.User(r)
+	var in app.ImageInput
+	if err := httpx.Decode(w, r, &in); err != nil {
+		return err
+	}
+	u, err := a.Svc.CreateImageUpload(r.Context(), p, in)
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusCreated, u)
 	return nil
 }

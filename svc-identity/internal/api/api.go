@@ -53,6 +53,7 @@ func (a *API) Routes() http.Handler {
 	mux.Handle("DELETE /v1/me/identities/{provider}", priv(a.unlink))
 
 	mux.Handle("GET /v1/users", h(a.users))
+	mux.Handle("GET /v1/users/search", h(a.searchUsers))
 	mux.Handle("GET /v1/users/by-handle/{handle}", h(a.userByHandle))
 	mux.Handle("GET /v1/users/{id}", h(a.user))
 	return httpx.Chain(mux, httpx.Timeout(15*time.Second))
@@ -368,5 +369,14 @@ func (a *API) userByHandle(w http.ResponseWriter, r *http.Request) error {
 	}
 	w.Header().Set("Cache-Control", "public, max-age=30")
 	httpx.JSON(w, http.StatusOK, u)
+	return nil
+}
+
+func (a *API) searchUsers(w http.ResponseWriter, r *http.Request) error {
+	list, err := a.Svc.SearchUsers(r.Context(), r.URL.Query().Get("q"))
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"items": list})
 	return nil
 }

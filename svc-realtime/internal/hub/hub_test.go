@@ -52,6 +52,7 @@ func TestFanOutAcrossPods(t *testing.T) {
 		go h.Run(ctx)
 		mux := http.NewServeMux()
 		mux.Handle("GET /v1/rt/rooms/{id}", v.Middleware(true, true)(h.ServeRoom([]string{"*"})))
+		mux.Handle("GET /v1/rt/me", v.Middleware(true, true)(h.ServeMe([]string{"*"})))
 		return httptest.NewServer(mux)
 	}
 	p1, p2 := pod(), pod()
@@ -114,4 +115,34 @@ func TestFanOutAcrossPods(t *testing.T) {
 	// Alice is still connected and receives later messages.
 	rdb.Publish(ctx, realtime.RoomChannel(room), b)
 	read(alice, realtime.TypeViewers)
+
+	// Personal channel: a DM published for carol reaches both of her devices
+	// (on different pods) and nobody else; chat frames on it are ignored.
+	me := func(srv *httptest.Server, user string) *websocket.Conn {
+		tok, _, _ := signer.Issue(user, "s2-"+user, true, nil)
+		c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/v1/rt/me?access_token="+tok, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	phone, laptop, dave := me(p1, "carol"), me(p2, "carol"), me(p1, "dave")
+	read(phone, realtime.TypeSystem)
+	read(laptop, realtime.TypeSystem)
+	read(dave, realtime.TypeSystem)
+	time.Sleep(200 * time.Millisecond)
+	phone.Write(ctx, websocket.MessageText, []byte(`{"type":"chat","text":"should be ignored"}`))
+	dm, _ := json.Marshal(realtime.Message{Type: realtime.TypeDM, Data: realtime.DM{ID: "m1", ConversationID: "c1", SenderID: "dave", Text: "hi carol"}})
+	rdb.Publish(ctx, realtime.UserChannel("carol"), dm)
+	for _, c := range []*websocket.Conn{phone, laptop} {
+		got := read(c, realtime.TypeDM)
+		raw, _ := json.Marshal(got.Data)
+		if !strings.Contains(string(raw), `"text":"hi carol"`) {
+			t.Fatalf("dm payload %s", raw)
+		}
+	}
+	rdb.Publish(ctx, realtime.UserChannel("dave"), b) // dave gets his own only
+	if m := read(dave, realtime.TypeViewers); m.Type != realtime.TypeViewers {
+		t.Fatal("dave missed his message")
+	}
 }

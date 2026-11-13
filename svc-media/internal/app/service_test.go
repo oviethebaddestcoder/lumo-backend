@@ -106,4 +106,35 @@ func TestUploadToReadyAndReplayImport(t *testing.T) {
 	if replays != 1 {
 		t.Fatalf("replays %d", replays)
 	}
+
+	// Views: only plays of 1 s or more count, and redelivery doesn't double count.
+	imp := func(ms int64) events.Envelope {
+		return events.MustNew("svc-feed", events.Impression, "u", events.ImpressionData{UserID: events.NewID(), VideoID: up.VideoID, WatchMS: ms})
+	}
+	batch := []events.Envelope{imp(5000), imp(1200), imp(300)}
+	if err := svc.ApplyViews(ctx, batch); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ApplyViews(ctx, batch); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := svc.Get(ctx, "", up.VideoID); got.Views != 2 {
+		t.Fatalf("views %d, want 2", got.Views)
+	}
+	// Hashtag search is case-insensitive and only shows public ready videos.
+	tagged, _, err := svc.ByHashtag(ctx, "#AfroDance", "", 10)
+	if err != nil || len(tagged) != 1 || tagged[0].ID != up.VideoID {
+		t.Fatalf("hashtag: %v %d", err, len(tagged))
+	}
+	// Image uploads are namespaced under the caller and type-checked.
+	img, err := svc.CreateImageUpload(ctx, owner, app.ImageInput{Purpose: "avatar", ContentType: "image/jpeg", SizeBytes: 200_000})
+	if err != nil || !strings.HasPrefix(img.URL, "https://cdn.test/images/avatar/"+owner.UserID+"/") || !strings.Contains(img.UploadURL, "X-Amz-Signature=") {
+		t.Fatalf("image: %v %+v", err, img)
+	}
+	if _, err := svc.CreateImageUpload(ctx, owner, app.ImageInput{Purpose: "avatar", ContentType: "image/gif", SizeBytes: 10}); err == nil {
+		t.Fatal("gif accepted")
+	}
+	if _, err := svc.CreateImageUpload(ctx, owner, app.ImageInput{Purpose: "avatar", ContentType: "image/png", SizeBytes: 6 << 20}); err == nil {
+		t.Fatal("oversized image accepted")
+	}
 }

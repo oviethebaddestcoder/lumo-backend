@@ -1,0 +1,1 @@
+ALTER TABLE prefs ADD COLUMN IF NOT EXISTS messages boolean NOT NULL DEFAULT true;

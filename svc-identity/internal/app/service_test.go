@@ -265,6 +265,16 @@ func TestPasswordLoginAndProfile(t *testing.T) {
 	if _, err := e.svc.UpdateProfile(ctx, res2.User.ID, app.ProfileUpdate{Handle: &h}); !errors.Is(err, app.ErrHandleTaken) {
 		t.Fatalf("want handle taken, got %v", err)
 	}
+	// Search: handle or display-name prefix, exact/handle match first, @ ignored, wildcards literal.
+	if got, err := e.svc.SearchUsers(ctx, "@ADA"); err != nil || len(got) != 2 || got[0].Handle != "ada.obi" {
+		t.Fatalf("search: %v %+v", err, got)
+	}
+	if got, _ := e.svc.SearchUsers(ctx, "a%"); len(got) != 0 {
+		t.Fatalf("wildcard leaked: %+v", got)
+	}
+	if got, _ := e.svc.SearchUsers(ctx, "a"); len(got) != 0 {
+		t.Fatalf("1-char query should return nothing: %+v", got)
+	}
 }
 
 func TestQRLogin(t *testing.T) {

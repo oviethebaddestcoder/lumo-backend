@@ -69,6 +69,25 @@ func (h *Hub) ServeRoom(origins []string) http.HandlerFunc {
 			httpx.Error(w, r, errs.BadRequest("room_invalid", "Bad room ID."))
 			return
 		}
+		h.serve(w, r, p, roomID, origins)
+	}
+}
+
+// ServeMe upgrades GET /v1/rt/me: the user's personal channel (direct
+// messages, read receipts, inbox badge). One per signed-in device.
+func (h *Hub) ServeMe(origins []string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p, err := auth.User(r)
+		if err != nil {
+			httpx.Error(w, r, err)
+			return
+		}
+		h.serve(w, r, p, realtime.UserRoom(p.UserID), origins)
+	}
+}
+
+func (h *Hub) serve(w http.ResponseWriter, r *http.Request, p auth.Principal, roomID string, origins []string) {
+	{
 		if h.conns.Load() >= h.opt.MaxConns {
 			w.Header().Set("Retry-After", "2")
 			httpx.Error(w, r, errs.Unavailable("pod_full", "Server busy, reconnecting."))
@@ -142,7 +161,9 @@ func (c *client) readLoop(ctx context.Context) {
 		if json.Unmarshal(data, &in) != nil {
 			continue
 		}
-		if in.Type == "chat" {
+		// Personal channels are receive-only: DMs are sent over HTTP so they
+		// are stored before anyone sees them.
+		if in.Type == "chat" && !strings.HasPrefix(c.roomID, "u:") {
 			c.chatMessage(ctx, in.Text)
 		}
 	}

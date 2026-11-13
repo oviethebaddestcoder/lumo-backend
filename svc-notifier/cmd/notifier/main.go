@@ -125,6 +125,28 @@ func worker(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return app.Group(ctx, social.Run, live.Run, ident.Run,
+	wallet, err := kafkax.NewConsumer(c.kafka, kafkax.ConsumerOptions{Group: "notifier-wallet", Topics: []string{events.TopicWalletEvents}, Handle: s.OnWallet})
+	if err != nil {
+		return err
+	}
+	dms, err := kafkax.NewConsumer(c.kafka, kafkax.ConsumerOptions{Group: "notifier-dm", Topics: []string{events.TopicDMMessages}, Handle: s.OnDM, StartAtEnd: true})
+	if err != nil {
+		return err
+	}
+	trim := func(ctx context.Context) error {
+		t := time.NewTicker(6 * time.Hour)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-t.C:
+				if err := s.TrimInbox(ctx); err != nil {
+					slog.WarnContext(ctx, "inbox trim failed", "err", err)
+				}
+			}
+		}
+	}
+	return app.Group(ctx, social.Run, live.Run, ident.Run, wallet.Run, dms.Run, trim,
 		httpx.NewServer(c.addr, nil, httpx.Check{Name: "postgres", Fn: pool.Ping}).Run)
 }

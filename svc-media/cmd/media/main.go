@@ -102,7 +102,12 @@ func worker(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return app.Group(ctx, outbox.NewRelay("media", pool, prod).Run, results.Run, live.Run, mod.Run,
+	views, err := kafkax.NewConsumer(c.kafka, kafkax.ConsumerOptions{Group: "media-views", Topics: []string{events.TopicFeedSignals},
+		HandleBatch: svc.ApplyViews, BatchSize: 2000})
+	if err != nil {
+		return err
+	}
+	return app.Group(ctx, outbox.NewRelay("media", pool, prod).Run, results.Run, live.Run, mod.Run, views.Run,
 		func(ctx context.Context) error {
 			t := time.NewTicker(15 * time.Minute)
 			defer t.Stop()

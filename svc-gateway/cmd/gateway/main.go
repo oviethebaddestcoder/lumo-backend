@@ -23,6 +23,7 @@ const DefaultRoutes = "/.well-known=http://svc-identity," +
 	"/v1/media=http://svc-media," +
 	"/v1/feed=http://svc-feed," +
 	"/v1/notify=http://svc-notifier," +
+	"/v1/dm=http://svc-messaging," +
 	"/v1/moderation=http://svc-moderation"
 
 func main() {

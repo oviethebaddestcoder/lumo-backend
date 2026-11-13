@@ -4,6 +4,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -282,4 +283,19 @@ func PruneSessions(ctx context.Context, q db.Querier) (int64, error) {
 			return total, nil
 		}
 	}
+}
+
+// SearchUsers matches active users whose handle or display name starts with q
+// (already lower-cased). Exact handle first, then verified accounts.
+func SearchUsers(ctx context.Context, q db.Querier, prefix string, limit int) ([]User, error) {
+	esc := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(prefix) + "%"
+	rows, err := q.Query(ctx, `SELECT `+userCols+` FROM (
+			SELECT * FROM users WHERE status = 'active' AND handle LIKE $2
+			UNION
+			SELECT * FROM users WHERE status = 'active' AND lower(display_name) LIKE $2
+		) u ORDER BY (handle = $1) DESC, verified DESC, char_length(handle), handle LIMIT $3`, prefix, esc, limit)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (User, error) { return scanUser(r) })
 }

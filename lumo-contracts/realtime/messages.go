@@ -20,6 +20,11 @@ const (
 	TypeKick      = "kick"
 	TypeSystem    = "system"
 	TypeError     = "error"
+
+	// Personal channel (/v1/rt/me) message types.
+	TypeDM     = "dm"      // data: DM
+	TypeDMRead = "dm_read" // data: DMRead
+	TypeNotify = "notify"  // data: {"unread": n} — inbox badge changed
 )
 
 // Message is the envelope sent to WebSocket clients.
@@ -34,6 +39,29 @@ type Message struct {
 
 // RoomChannel is the Redis pub/sub channel for a room.
 func RoomChannel(roomID string) string { return "rt:room:" + roomID }
+
+// UserRoom is the pseudo-room holding one user's personal connections.
+func UserRoom(userID string) string { return "u:" + userID }
+
+// UserChannel is the Redis channel for messages to one user's devices.
+func UserChannel(userID string) string { return RoomChannel(UserRoom(userID)) }
+
+// DM is a direct message delivered live to both participants.
+type DM struct {
+	ID             string    `json:"id"`
+	ConversationID string    `json:"conversation_id"`
+	SenderID       string    `json:"sender_id"`
+	Text           string    `json:"text"`
+	ClientID       string    `json:"client_id,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+// DMRead tells the other participant how far a conversation was read.
+type DMRead struct {
+	ConversationID string    `json:"conversation_id"`
+	UserID         string    `json:"user_id"`
+	ReadAt         time.Time `json:"read_at"`
+}
 
 type Chat struct {
 	ID          string `json:"id"`

@@ -22,6 +22,9 @@ func (a *API) Routes() http.Handler {
 	mux.Handle("DELETE /v1/notify/devices/{token}", priv(a.unregister))
 	mux.Handle("GET /v1/notify/prefs", priv(a.getPrefs))
 	mux.Handle("PUT /v1/notify/prefs", priv(a.setPrefs))
+	mux.Handle("GET /v1/notify/inbox", priv(a.inbox))
+	mux.Handle("GET /v1/notify/inbox/unread", priv(a.unread))
+	mux.Handle("POST /v1/notify/inbox/read", priv(a.markRead))
 	return httpx.Chain(mux, httpx.Timeout(5*time.Second))
 }
 
@@ -62,7 +65,11 @@ func (a *API) getPrefs(w http.ResponseWriter, r *http.Request) error {
 
 func (a *API) setPrefs(w http.ResponseWriter, r *http.Request) error {
 	p, _ := auth.User(r)
-	var in app.Prefs
+	// Start from the saved prefs so fields an older app doesn't send keep their value.
+	in, err := a.Svc.GetPrefs(r.Context(), p.UserID)
+	if err != nil {
+		return err
+	}
 	if err := httpx.Decode(w, r, &in); err != nil {
 		return err
 	}
@@ -70,5 +77,34 @@ func (a *API) setPrefs(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	httpx.JSON(w, http.StatusOK, in)
+	return nil
+}
+
+func (a *API) inbox(w http.ResponseWriter, r *http.Request) error {
+	p, _ := auth.User(r)
+	items, next, err := a.Svc.Inbox(r.Context(), p.UserID, r.URL.Query().Get("cursor"), 0)
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, httpx.Page[app.InboxItem]{Items: items, NextCursor: next})
+	return nil
+}
+
+func (a *API) unread(w http.ResponseWriter, r *http.Request) error {
+	p, _ := auth.User(r)
+	n, err := a.Svc.Unread(r.Context(), p.UserID)
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, map[string]int{"count": n})
+	return nil
+}
+
+func (a *API) markRead(w http.ResponseWriter, r *http.Request) error {
+	p, _ := auth.User(r)
+	if err := a.Svc.MarkRead(r.Context(), p.UserID); err != nil {
+		return err
+	}
+	w.WriteHeader(http.StatusNoContent)
 	return nil
 }

@@ -18,8 +18,8 @@ jobs:
         with: { fetch-depth: 0 }
       - id: pick
         run: |
-          ALL='lumo-contracts lumo-kit svc-feed svc-gateway svc-identity svc-live svc-media svc-moderation svc-notifier svc-realtime svc-social svc-wallet worker-transcoder'
-          SVCS='svc-feed svc-gateway svc-identity svc-live svc-media svc-moderation svc-notifier svc-realtime svc-social svc-wallet worker-transcoder'
+          ALL='lumo-contracts lumo-kit svc-feed svc-gateway svc-identity svc-live svc-media svc-messaging svc-moderation svc-notifier svc-realtime svc-social svc-wallet worker-transcoder'
+          SVCS='svc-feed svc-gateway svc-identity svc-live svc-media svc-messaging svc-moderation svc-notifier svc-realtime svc-social svc-wallet worker-transcoder'
           if [ "${{ github.event_name }}" = "pull_request" ]; then BASE="${{ github.event.pull_request.base.sha }}"; else BASE="${{ github.event.before }}"; fi
           if [ -z "$BASE" ] || ! git cat-file -e "$BASE" 2>/dev/null || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then CHANGED="$ALL"; else
             CHANGED=$(git diff --name-only "$BASE" HEAD | cut -d/ -f1 | sort -u | tr '\n' ' ')
