@@ -54,7 +54,7 @@ jobs:
         working-directory: ${{ matrix.module }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26"
           cache-dependency-path: ${{ matrix.module }}/go.mod
@@ -89,7 +89,7 @@ jobs:
       LOG_LEVEL: info
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with: { go-version: "1.26", cache: false }
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg postgresql-client redis-tools
       - run: lumo-infra/e2e/run.sh
@@ -127,7 +127,7 @@ jobs:
         with: { repository: oviethebaddestcoder/lumo-web, path: lumo-web, token: "${{ secrets.LUMO_REPOS_TOKEN || github.token }}" }
       - uses: actions/checkout@v4
         with: { repository: oviethebaddestcoder/lumo-mobile, path: lumo-mobile, token: "${{ secrets.LUMO_REPOS_TOKEN || github.token }}" }
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with: { go-version: "1.26", cache: false }
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
@@ -158,7 +158,7 @@ jobs:
         working-directory: svc-feed
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with: { go-version: "1.26", cache-dependency-path: svc-feed/go.mod }
       - run: go mod tidy
       - run: go test ./internal/app -run Sim -v -count=1 -timeout 15m
@@ -171,7 +171,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with: { go-version: "1.26", cache: false }
       - run: python3 lumo-infra/scripts/gen-dashboards.py && git diff --exit-code lumo-infra/k8s/dashboards.yaml
       - working-directory: lumo-infra/scripts/promcheck
