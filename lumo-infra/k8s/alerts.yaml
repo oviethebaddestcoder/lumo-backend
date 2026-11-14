@@ -1,38 +1,187 @@
-# Prometheus Operator rules for the failure modes that matter first.
+# Prometheus Operator rules. Every alert has a severity, a one-line summary
+# and a runbook section (lumo-infra/docs/runbook.md#<alert-name-lowercase>).
+#   page   = wake someone up (money, sign-in, or the app is down)
+#   ticket = fix in working hours
+# Kafka lag needs a lag exporter (kminion or kafka_exporter); Redis and
+# Postgres alerts assume redis_exporter and Neon's metrics integration.
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata: { name: lumo-alerts, namespace: lumo }
 spec:
   groups:
-    - name: lumo
+    - name: lumo-availability
+      rules:
+        - alert: High5xx
+          expr: |
+            sum by (service, route) (rate(http_requests_total{status=~"5.."}[5m]))
+              / sum by (service, route) (rate(http_requests_total[5m])) > 0.02
+            and sum by (service, route) (rate(http_requests_total[5m])) > 1
+          for: 5m
+          labels: { severity: page }
+          annotations:
+            summary: "{{ $labels.service }} {{ $labels.route }}: 5xx above 2%"
+            runbook: lumo-infra/docs/runbook.md#high5xx
+        - alert: SlowP99
+          expr: histogram_quantile(0.99, sum by (le, service, route) (rate(http_request_duration_seconds_bucket[5m]))) > 1
+          for: 10m
+          labels: { severity: ticket }
+          annotations:
+            summary: "{{ $labels.service }} {{ $labels.route }}: p99 above 1s"
+            runbook: lumo-infra/docs/runbook.md#slowp99
+        - alert: GatewayUpstreamErrors
+          expr: sum by (upstream) (rate(gateway_upstream_errors_total[5m])) > 1
+          for: 3m
+          labels: { severity: page }
+          annotations:
+            summary: "Gateway can't reach {{ $labels.upstream }}"
+            runbook: lumo-infra/docs/runbook.md#gatewayupstreamerrors
+        - alert: PodCrashLooping
+          expr: increase(kube_pod_container_status_restarts_total{namespace="lumo"}[15m]) > 3
+          labels: { severity: page }
+          annotations:
+            summary: "{{ $labels.pod }} restarted {{ $value }} times in 15m"
+            runbook: lumo-infra/docs/runbook.md#podcrashlooping
+
+    - name: lumo-events
       rules:
         - alert: OutboxBacklog
           expr: max by (relay) (outbox_oldest_age_seconds) > 30
           for: 2m
-          annotations: { summary: "Outbox {{ $labels.relay }} has events older than 30s: Kafka or relay is stuck" }
+          labels: { severity: page }
+          annotations:
+            summary: "Outbox {{ $labels.relay }} has events older than 30s: Kafka or the relay is stuck"
+            runbook: lumo-infra/docs/runbook.md#outboxbacklog
         - alert: OutboxNoLeader
           expr: sum by (relay) (outbox_relay_leader) == 0
           for: 2m
-          annotations: { summary: "No pod holds the {{ $labels.relay }} outbox lease" }
+          labels: { severity: page }
+          annotations:
+            summary: "No pod holds the {{ $labels.relay }} outbox lease"
+            runbook: lumo-infra/docs/runbook.md#outboxnoleader
         - alert: EventsDeadLettered
           expr: sum by (group, topic) (increase(kafka_events_dlq_total[10m])) > 0
-          annotations: { summary: "{{ $labels.group }} dead-lettered events from {{ $labels.topic }}" }
+          labels: { severity: ticket }
+          annotations:
+            summary: "{{ $labels.group }} dead-lettered events from {{ $labels.topic }}"
+            runbook: lumo-infra/docs/runbook.md#eventsdeadlettered
         - alert: ConsumerRetrying
           expr: sum by (group) (rate(kafka_events_consumed_total{result="retry"}[5m])) > 1
           for: 5m
-          annotations: { summary: "{{ $labels.group }} is retrying events (a dependency is failing)" }
+          labels: { severity: ticket }
+          annotations:
+            summary: "{{ $labels.group }} is retrying events (a dependency is failing)"
+            runbook: lumo-infra/docs/runbook.md#consumerretrying
+        - alert: ConsumerLagGrowing
+          # Money and messaging consumers must stay near real time.
+          expr: |
+            sum by (group) (kafka_consumergroup_lag{group=~"wallet-.*|messaging-.*|notifier-.*|feed-signals|social-.*"}) > 10000
+            and deriv(sum by (group) (kafka_consumergroup_lag{group=~"wallet-.*|messaging-.*|notifier-.*|feed-signals|social-.*"})[10m:1m]) > 0
+          for: 10m
+          labels: { severity: page }
+          annotations:
+            summary: "{{ $labels.group }} is {{ $value }} events behind and falling further behind"
+            runbook: lumo-infra/docs/runbook.md#consumerlaggrowing
+
+    - name: lumo-money
+      rules:
         - alert: LedgerReconciliationFailed
           expr: max(wallet_reconcile_problems) > 0
-          annotations: { summary: "Wallet ledger reconciliation found problems. Page finance + on-call." }
-        - alert: High5xx
-          expr: sum by (route) (rate(http_requests_total{status=~"5.."}[5m])) / sum by (route) (rate(http_requests_total[5m])) > 0.02
-          for: 5m
-          annotations: { summary: "{{ $labels.route }} 5xx rate above 2%" }
-        - alert: SlowP99
-          expr: histogram_quantile(0.99, sum by (le, route) (rate(http_request_duration_seconds_bucket[5m]))) > 1
+          labels: { severity: page }
+          annotations:
+            summary: "Wallet ledger reconciliation found problems. Page finance and on-call."
+            runbook: lumo-infra/docs/runbook.md#ledgerreconciliationfailed
+        - alert: PayoutStuckProcessing
+          # Approved, transfer sent, and no Paystack webhook for an hour.
+          expr: max(wallet_payout_oldest_seconds{status="processing"}) > 3600
+          labels: { severity: page }
+          annotations:
+            summary: "A cash-out has been processing for over an hour (no Paystack webhook)"
+            runbook: lumo-infra/docs/runbook.md#payoutstuckprocessing
+        - alert: PayoutReviewBacklog
+          expr: max(wallet_payout_oldest_seconds{status="pending_review"}) > 2 * 86400
+          labels: { severity: ticket }
+          annotations:
+            summary: "Cash-outs have waited over 2 days for finance review ({{ with query \"sum(wallet_payouts{status='pending_review'})\" }}{{ . | first | value }}{{ end }} waiting)"
+            runbook: lumo-infra/docs/runbook.md#payoutreviewbacklog
+        - alert: PaystackWebhookRejected
+          # Bad signatures: someone is forging webhooks, or the secret was rotated on one side only.
+          expr: sum(rate(http_requests_total{service="svc-wallet", route=~".*webhooks/paystack.*", status="401"}[10m])) > 0.05
           for: 10m
-          annotations: { summary: "{{ $labels.route }} p99 latency above 1s" }
+          labels: { severity: page }
+          annotations:
+            summary: "Paystack webhooks are failing signature checks"
+            runbook: lumo-infra/docs/runbook.md#paystackwebhookrejected
+        - alert: GiftsStopped
+          # Live rooms are busy but no gifts are going through: purchases or sends are broken.
+          expr: sum(rate(wallet_gift_coins_total[15m])) == 0 and sum(live_rooms_active) > 20
+          for: 15m
+          labels: { severity: page }
+          annotations:
+            summary: "No gifts in 15 minutes while {{ with query \"sum(live_rooms_active)\" }}{{ . | first | value }}{{ end }} rooms are live"
+            runbook: lumo-infra/docs/runbook.md#giftsstopped
+
+    - name: lumo-abuse
+      rules:
+        - alert: OTPSendSpike
+          # SMS pumping: bots request codes to premium numbers and we pay for each SMS.
+          expr: |
+            sum(rate(identity_otp_sent_total{channel="sms", result="sent"}[10m]))
+              > 3 * sum(rate(identity_otp_sent_total{channel="sms", result="sent"}[10m] offset 1d)) + 2
+          for: 10m
+          labels: { severity: page }
+          annotations:
+            summary: "SMS code sends are 3x yesterday's rate: possible SMS pumping"
+            runbook: lumo-infra/docs/runbook.md#otpsendspike
+        - alert: OTPSendFailures
+          expr: |
+            sum by (channel) (rate(identity_otp_sent_total{result="failed"}[5m]))
+              / sum by (channel) (rate(identity_otp_sent_total{result=~"sent|failed"}[5m])) > 0.1
+          for: 5m
+          labels: { severity: page }
+          annotations:
+            summary: "{{ $value | humanizePercentage }} of {{ $labels.channel }} sign-in codes fail to send: people can't sign in"
+            runbook: lumo-infra/docs/runbook.md#otpsendfailures
+
+    - name: lumo-product
+      rules:
+        - alert: FeedCompletionDropped
+          # Share of views watched to the end, vs the same hour yesterday:
+          # catches a bad ranking change or a broken player.
+          expr: |
+            (sum(rate(feed_views_total{outcome="complete"}[1h])) / sum(rate(feed_views_total[1h])))
+              < 0.8 * (sum(rate(feed_views_total{outcome="complete"}[1h] offset 1d)) / sum(rate(feed_views_total[1h] offset 1d)))
+          for: 30m
+          labels: { severity: ticket }
+          annotations:
+            summary: "For You completion rate is 20%+ below yesterday"
+            runbook: lumo-infra/docs/runbook.md#feedcompletiondropped
+        - alert: FeedRankSlow
+          expr: histogram_quantile(0.95, sum by (le) (rate(feed_rank_seconds_bucket[5m]))) > 0.05
+          for: 10m
+          labels: { severity: ticket }
+          annotations:
+            summary: "For You ranking p95 above 50ms"
+            runbook: lumo-infra/docs/runbook.md#feedrankslow
+        - alert: TranscodeFailing
+          expr: |
+            sum(rate(transcode_jobs_total{result="failed"}[15m])) / sum(rate(transcode_jobs_total[15m])) > 0.05
+            and sum(rate(transcode_jobs_total[15m])) > 0.01
+          for: 15m
+          labels: { severity: page }
+          annotations:
+            summary: "{{ $value | humanizePercentage }} of uploads fail to transcode"
+            runbook: lumo-infra/docs/runbook.md#transcodefailing
+        - alert: PushFailing
+          expr: sum(rate(push_sent_total{result="error"}[10m])) / sum(rate(push_sent_total[10m])) > 0.2
+          for: 10m
+          labels: { severity: ticket }
+          annotations:
+            summary: "{{ $value | humanizePercentage }} of push notifications fail"
+            runbook: lumo-infra/docs/runbook.md#pushfailing
         - alert: RealtimeDroppingClients
           expr: sum(rate(realtime_slow_clients_total[5m])) > 50
           for: 5m
-          annotations: { summary: "Realtime is dropping slow WebSocket clients" }
+          labels: { severity: ticket }
+          annotations:
+            summary: "Realtime is dropping slow WebSocket clients"
+            runbook: lumo-infra/docs/runbook.md#realtimedroppingclients

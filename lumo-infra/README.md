@@ -126,15 +126,17 @@ service containers.
 | Video | LiveKit Cloud or self-hosted LiveKit near users | egress writes HLS/MP4 to R2 |
 | Storage + CDN | Cloudflare R2 + Cloudflare CDN | no egress fees; long cache on `hls/` |
 | Secrets | External Secrets Operator | `lumo-common` + one secret per service |
-| Observability | Prometheus + Grafana + Loki | `k8s/alerts.yaml`; add Kafka lag exporter |
+| Observability | Prometheus + Grafana + Loki | 21 alerts (`k8s/alerts.yaml`), the "Lumo overview" dashboard (`k8s/dashboards.yaml`), on-call steps in [`docs/runbook.md`](docs/runbook.md). Add kminion or kafka_exporter for consumer lag |
 | SMS | Termii (Nigeria) + Twilio fallback | rate limits already in identity |
 | Push | Firebase Cloud Messaging | |
 
 ## Scaling toward 200M users
 
 Everything is horizontally scalable, and the known hot spots are handled in
-the design. It has **not** been load-tested at that size: that is the next
-step (k6 scripts per endpoint, plus a Kafka replay test) before launch.
+the design. Every service has been run together and load-tested on one
+small machine ([`e2e/`](e2e/README.md): ~800 req/s with 0 errors on 2 shared
+cores). It has **not** been load-tested at production size. Before launch,
+run `e2e/load` against a staging cluster sized like production.
 
 | Pressure | Where | Already handled | When it bites, do |
 |---|---|---|---|
@@ -153,7 +155,8 @@ step (k6 scripts per endpoint, plus a Kafka replay test) before launch.
 - **Internal calls are HTTP/JSON, not gRPC.** The plan doc said gRPC. There are only two synchronous internal reads (profiles, follower pages), and events carry everything else, so I kept the build simpler. Add gRPC if more synchronous calls appear.
 - **Events are JSON with a versioned envelope.** Move to Protobuf + a schema registry when several teams publish to the same topics.
 - Tracing propagates W3C `traceparent` through HTTP, Kafka and logs; plug in the OpenTelemetry exporter for a trace UI.
-- Payout bank transfers and KYC (BVN/NIN) need a provider integration; payouts stop at `pending_review`.
-- Moderation scanning is a keyword list; connect an ML vendor for images, video and text.
-- The admin console, Creator Studio and web wallet UIs live in the Next.js app.
-- Search (users, hashtags) and DMs are not built yet.
+- **KYC (BVN/NIN) for cash-outs** needs a provider (e.g. Smile ID, Dojah, Prembly). Until then finance reviews every cash-out by hand; Paystack bank transfers, the 48-hour pause after a bank change and the payout state machine are built.
+- **Moderation scanning** is a keyword list; connect an ML vendor for images, video and text.
+- **Ranking weights are hand-tuned.** Impressions carry the retrieval source and A/B arm; train weights on that data once there is traffic.
+- **Search** is Postgres (trigram and prefix); move to OpenSearch or Typesense past a few million users.
+- **Not tested on real phones** yet: run the dev builds on low-end Android devices on 3G before launch.

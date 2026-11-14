@@ -145,6 +145,39 @@ func serve(ctx context.Context) error {
 	return httpx.NewServer(c.addr, a.Routes(), httpx.Check{Name: "shards", Fn: s.Shards.Ping}).Run(ctx)
 }
 
+var (
+	payoutsWaiting = metrics.NewGaugeVec("wallet_payouts", "Cash-outs not yet final, by status (pending_review, processing).", "status")
+	payoutOldest   = metrics.NewGaugeVec("wallet_payout_oldest_seconds", "Age of the oldest cash-out in each waiting status (alert: stuck payouts).", "status")
+)
+
+// payoutGauges refreshes the waiting cash-out gauges across all shards.
+func payoutGauges(ctx context.Context, s *wapp.Service) {
+	count := map[string]float64{"pending_review": 0, "processing": 0}
+	oldest := map[string]float64{"pending_review": 0, "processing": 0}
+	for _, r := range s.Shards.All() {
+		rows, err := r.Pool.Query(ctx, `SELECT status, count(*), COALESCE(EXTRACT(EPOCH FROM now() - min(updated_at)), 0)
+			FROM payouts WHERE status IN ('pending_review', 'processing') GROUP BY status`)
+		if err != nil {
+			slog.Error("payout gauges", "shard", r.Index, "err", err)
+			return
+		}
+		for rows.Next() {
+			var st string
+			var n int64
+			var age float64
+			if rows.Scan(&st, &n, &age) == nil {
+				count[st] += float64(n)
+				oldest[st] = max(oldest[st], age)
+			}
+		}
+		rows.Close()
+	}
+	for st := range count {
+		payoutsWaiting.WithLabelValues(st).Set(count[st])
+		payoutOldest.WithLabelValues(st).Set(oldest[st])
+	}
+}
+
 var reconcileBad = metrics.NewGaugeVec("wallet_reconcile_problems", "Unbalanced transactions or mismatched balances found by reconciliation (alert if > 0).", "shard", "kind")
 
 func worker(ctx context.Context) error {
@@ -209,6 +242,7 @@ func worker(ctx context.Context) error {
 		}))
 	}
 	tasks = append(tasks,
+		every(time.Minute, func(ctx context.Context) { payoutGauges(ctx, s) }),
 		every(6*time.Hour, func(ctx context.Context) {
 			for _, r := range s.Shards.All() {
 				if _, err := r.Pool.Exec(ctx, `SELECT wallet_ensure_partitions(3)`); err != nil {

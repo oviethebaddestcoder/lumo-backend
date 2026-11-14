@@ -8,6 +8,7 @@ updates:
     directories:
       - /lumo-contracts
       - /lumo-infra/e2e
+      - /lumo-infra/scripts/promcheck
       - /lumo-kit
       - /svc-feed
       - /svc-gateway

@@ -21,6 +21,7 @@ import (
 
 	"github.com/nyaruka/phonenumbers"
 	"github.com/oviethebaddestcoder/lumo-backend/lumo-kit/errs"
+	"github.com/oviethebaddestcoder/lumo-backend/lumo-kit/metrics"
 	"github.com/oviethebaddestcoder/lumo-backend/lumo-kit/redisx"
 	"github.com/redis/go-redis/v9"
 )
@@ -105,6 +106,7 @@ func (s *Service) Send(ctx context.Context, channel, target, ip string) (time.Du
 			return 0, errs.Unavailable("otp_unavailable", "Can't send codes right now. Try again.").Wrap(err)
 		}
 		if !res.Allowed {
+			otpSent.WithLabelValues(channel, "rate_limited").Inc()
 			return 0, errs.ErrRateLimited.With("retry_after_seconds", int(res.RetryAfter.Seconds())+1)
 		}
 	}
@@ -125,6 +127,7 @@ func (s *Service) Send(ctx context.Context, channel, target, ip string) (time.Du
 		return 0, fmt.Errorf("otp: store: %w", err)
 	}
 	if test {
+		otpSent.WithLabelValues(channel, "test_account").Inc()
 		return codeTTL, nil
 	}
 	sender := s.SMS
@@ -133,10 +136,16 @@ func (s *Service) Send(ctx context.Context, channel, target, ip string) (time.Du
 	}
 	if err := sender.Send(ctx, target, code); err != nil {
 		s.R.Del(context.WithoutCancel(ctx), k)
+		otpSent.WithLabelValues(channel, "failed").Inc()
 		return 0, errs.Unavailable("otp_send_failed", "We couldn't send the code. Try again.").Wrap(err)
 	}
+	otpSent.WithLabelValues(channel, "sent").Inc()
 	return codeTTL, nil
 }
+
+// otpSent counts code sends. SMS costs money per message, so a sudden rise
+// is the signature of SMS pumping fraud (alert OTPSendSpike).
+var otpSent = metrics.NewCounterVec("identity_otp_sent_total", "Sign-in codes by channel and result (sent, failed, rate_limited, test_account).", "channel", "result")
 
 // checkScript atomically counts an attempt and returns the stored MAC.
 var checkScript = redis.NewScript(`
