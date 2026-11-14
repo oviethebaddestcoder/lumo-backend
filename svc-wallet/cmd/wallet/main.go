@@ -43,6 +43,7 @@ type cfg struct {
 	appleBundle         string
 	appleSandbox        bool
 	paystackKey         string
+	paystackURL         string
 }
 
 func load() (cfg, error) {
@@ -63,15 +64,23 @@ func load() (cfg, error) {
 		appleBundle:  e.Str("APPLE_BUNDLE_ID", ""),
 		appleSandbox: e.Bool("APPLE_IAP_SANDBOX", false),
 		paystackKey:  e.Str("PAYSTACK_SECRET_KEY", ""),
+		paystackURL:  e.Str("PAYSTACK_BASE_URL", ""), // tests and staging only; default https://api.paystack.co
 	}
 	c.svc = &wapp.Service{
 		DiamondPercent: e.Int64("DIAMONDS_PER_100_COINS", 50),
 		MinPayout:      e.Int64("MIN_PAYOUT_DIAMONDS", 10_000),
-		KoboPerDiamond: e.Int64("PAYOUT_KOBO_PER_DIAMOND", 50),
+		KoboPerDiamond: e.Int64("PAYOUT_KOBO_PER_DIAMOND", 0),
 		AccountSecret:  e.Base64("ACCOUNT_TAG_SECRET", true),
 	}
 	if c.shardsDir == "" {
 		c.shardsDir = c.shards
+	}
+	// The payout rate decides what creators earn, so there is no default:
+	// bank cash-outs refuse to start until someone sets it on purpose.
+	// Creator share of what a fan paid = rate × DIAMONDS_PER_100_COINS/100 ÷
+	// the coin's price in kobo (e.g. 2000 kobo × 0.5 ÷ 2000 = 50%).
+	if c.paystackKey != "" && c.svc.KoboPerDiamond <= 0 {
+		e.Required("PAYOUT_KOBO_PER_DIAMOND")
 	}
 	return c, e.Err()
 }
@@ -116,7 +125,7 @@ func build(ctx context.Context, c cfg) (*wapp.Service, error) {
 		s.Apple = &stores.AppStore{IssuerID: c.appleIssuer, KeyID: c.appleK, Key: k, BundleID: c.appleBundle, Sandbox: c.appleSandbox}
 	}
 	if c.paystackKey != "" {
-		s.Paystack = &stores.Paystack{SecretKey: c.paystackKey}
+		s.Paystack = &stores.Paystack{SecretKey: c.paystackKey, BaseURL: c.paystackURL}
 	}
 	slog.Info("wallet ready", "shards", len(router.All()), "google_play", s.Google != nil, "app_store", s.Apple != nil, "paystack", s.Paystack != nil)
 	return s, nil

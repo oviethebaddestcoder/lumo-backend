@@ -532,6 +532,11 @@ func (s *Service) socialSignal(ctx context.Context, e events.Envelope) error {
 		if e.Type == events.Unfollowed {
 			w, kind = -wFollow, "unfollow"
 		}
+		pipe := s.R.Pipeline()
+		dropFollowing(ctx, pipe, f.FollowerID)
+		if _, err := pipe.Exec(ctx); err != nil {
+			return err
+		}
 		return s.applySignals(ctx, []signal{{uid: f.FollowerID, m: meta{owner: f.FolloweeID}, authorW: w, strong: true, kind: kind}})
 	case events.Blocked, events.Unblocked:
 		var b events.BlockData

@@ -61,9 +61,53 @@ jobs:
       - run: go mod tidy   # writes go.sum until you commit one (see README)
       - run: go vet ./...
       - run: go test -race -count=1 ./...
+      # Known-vulnerable dependencies or standard library calls fail the build.
+      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  # Every service running together against real Postgres and Redis plus
+  # in-memory Kafka/S3/Paystack, driven through the gateway like the apps
+  # do (lumo-infra/e2e). Catches what per-service tests can't: one service's
+  # events not doing what another service expects.
+  e2e:
+    needs: changes
+    if: needs.changes.outputs.modules != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_PASSWORD: postgres }
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U postgres" --health-interval 5s --health-retries 10
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+    env:
+      PG_URL: postgres://postgres:postgres@localhost:5432
+      E2E_REDIS_URL: redis://localhost:6379/5
+      GOFLAGS: -mod=mod
+      LOG_LEVEL: info
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.26", cache: false }
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg postgresql-client redis-tools
+      - run: lumo-infra/e2e/run.sh
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with: { name: e2e-logs, path: /tmp/lumo-e2e/logs }
+
+  # Secrets committed by mistake (keys, tokens) fail the build.
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: gitleaks/gitleaks-action@v2
+        env: { GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
 
   image:
-    needs: [changes, test]
+    needs: [changes, test, e2e, secrets]
     if: github.ref == 'refs/heads/main' && needs.changes.outputs.services != '[]'
     runs-on: ubuntu-latest
     strategy:

@@ -1,0 +1,7 @@
+# The e2e harness and tests use obviously fake credentials; everything else is scanned.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "test fixtures"
+paths = ['''_test\.go$''', '''lumo-infra/e2e/''', '''\.env\.example$''']

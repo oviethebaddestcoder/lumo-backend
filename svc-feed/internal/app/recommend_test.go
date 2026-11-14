@@ -236,3 +236,42 @@ func TestRecommenderLearns(t *testing.T) {
 		t.Fatal("active creator dropped")
 	}
 }
+
+// A follow must show up in Following at once, not when a cache expires.
+func TestFollowInvalidatesCachedFollowList(t *testing.T) {
+	rurl := os.Getenv("LUMO_TEST_REDIS")
+	if rurl == "" {
+		t.Skip("set LUMO_TEST_REDIS")
+	}
+	ctx := context.Background()
+	rdb, _ := redisx.Open(ctx, rurl, "", "")
+	rdb.FlushDB(ctx)
+	var follows []string
+	social := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"ids": follows})
+	}))
+	defer social.Close()
+	s := &Service{R: rdb, SocialURL: social.URL, HTTP: http.DefaultClient}
+	viewer, creator := events.NewID(), events.NewID()
+	if ids, _ := s.followingIDs(ctx, viewer); len(ids) != 0 {
+		t.Fatal("expected no follows")
+	}
+	follows = []string{creator} // the follow happens in svc-social...
+	if ids, _ := s.followingIDs(ctx, viewer); len(ids) != 0 {
+		t.Fatal("cache should still answer before the event arrives")
+	}
+	// ...and its event reaches the feed worker.
+	if err := s.OnSocial(ctx, events.MustNew("s", events.Followed, creator, events.FollowData{FollowerID: viewer, FolloweeID: creator})); err != nil {
+		t.Fatal(err)
+	}
+	if ids, _ := s.followingIDs(ctx, viewer); len(ids) != 1 || ids[0] != creator {
+		t.Fatalf("after follow event: %v", ids)
+	}
+	// A read that started before a change must not cache the old list.
+	v, _ := rdb.Get(ctx, uKey(viewer, "fv")).Int64()
+	rdb.Incr(ctx, uKey(viewer, "fv"))
+	rdb.Del(ctx, uKey(viewer, "f"))
+	if n, _ := setIfVersion.Run(ctx, rdb, []string{uKey(viewer, "f"), uKey(viewer, "fv")}, `["stale"]`, 300, v).Int(); n != 0 {
+		t.Fatal("stale list cached after a newer change")
+	}
+}

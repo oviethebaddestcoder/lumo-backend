@@ -58,7 +58,6 @@ type profile struct {
 
 func (s *Service) init() {
 	s.once.Do(func() {
-		s.following = cache.New[[]string](2*time.Minute, 200_000)
 		s.metaCache = cache.New[meta](10*time.Minute, 500_000)
 		s.statCache = cache.New[Stats](30*time.Second, 500_000)
 		s.anonCache = cache.New[[]ranked](30*time.Second, 4)

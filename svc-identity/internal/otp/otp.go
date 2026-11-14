@@ -6,6 +6,7 @@
 package otp
 
 import (
+	"cmp"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -51,6 +52,11 @@ type Service struct {
 	SMS       Sender
 	Email     Sender
 	TestCodes map[string]string // target -> fixed code (store reviewers)
+	// PerIPHour caps codes sent per client IP per hour. Mobile carriers put
+	// thousands of people behind one address (CGNAT), so this is a guard
+	// against SMS-pumping floods, not a per-person limit; per-target limits
+	// do that. Default 200.
+	PerIPHour int
 }
 
 // Normalize validates and canonicalizes a target: E.164 for phones,
@@ -92,7 +98,7 @@ func (s *Service) Send(ctx context.Context, channel, target, ip string) (time.Du
 	}{
 		{"otp:t1:" + target, 1, time.Minute},
 		{"otp:t60:" + target, 5, time.Hour},
-		{"otp:ip:" + ip, 30, time.Hour},
+		{"otp:ip:" + ip, cmp.Or(s.PerIPHour, 200), time.Hour},
 	} {
 		res, err := s.Limiter.Allow(ctx, l.k, l.limit, l.win)
 		if err != nil {

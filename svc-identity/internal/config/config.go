@@ -34,6 +34,7 @@ type Config struct {
 
 	OTPSecret      []byte
 	OTPTestNumbers map[string]string // fixed codes for app-store reviewers
+	OTPPerIPHour   int               // codes per client IP per hour (carrier NAT-aware)
 	DefaultRegion  string            // for phone parsing, e.g. "NG"
 	SMSProvider    string            // log | termii | twilio
 	TermiiKey      string
@@ -140,6 +141,7 @@ func Load() (Config, error) {
 		e.Required("SIGNING_KEYS")
 	}
 
+	c.OTPPerIPHour = e.Int("OTP_PER_IP_PER_HOUR", 200)
 	c.OTPTestNumbers = map[string]string{}
 	for _, p := range e.List("OTP_TEST_ACCOUNTS", nil) { // "+2348000000001=123456,review@example.com=654321"
 		if k, v, ok := strings.Cut(p, "="); ok {

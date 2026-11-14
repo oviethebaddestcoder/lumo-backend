@@ -108,7 +108,7 @@ func build(ctx context.Context, cfg config.Config) (*idapp.Service, func(), erro
 	svc := &idapp.Service{
 		Pool: pool, Redis: rdb, Limiter: lim, Signer: signer, Providers: reg,
 		OTP: &otp.Service{R: rdb, Limiter: lim, Secret: cfg.OTPSecret, Region: cfg.DefaultRegion,
-			SMS: sms, Email: email, TestCodes: cfg.OTPTestNumbers},
+			SMS: sms, Email: email, TestCodes: cfg.OTPTestNumbers, PerIPHour: cfg.OTPPerIPHour},
 		RefreshTTL: cfg.RefreshTTL, SessionMaxAge: cfg.SessionMaxAge,
 	}
 	return svc, func() { pool.Close(); _ = rdb.Close() }, nil

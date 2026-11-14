@@ -1,0 +1,26 @@
+# Weekly dependency update PRs; CI (tests, govulncheck, e2e) gates them.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+  - package-ecosystem: gomod
+    directories:
+      - /lumo-contracts
+      - /lumo-infra/e2e
+      - /lumo-kit
+      - /svc-feed
+      - /svc-gateway
+      - /svc-identity
+      - /svc-live
+      - /svc-media
+      - /svc-messaging
+      - /svc-moderation
+      - /svc-notifier
+      - /svc-realtime
+      - /svc-social
+      - /svc-wallet
+      - /worker-transcoder
+    schedule: { interval: weekly }
+    groups:
+      go-deps: { patterns: ["*"] }

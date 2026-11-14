@@ -52,7 +52,6 @@ type Service struct {
 	HTTP          *http.Client
 
 	once      sync.Once
-	following *cache.Cache[[]string]
 	metaCache *cache.Cache[meta]
 	statCache *cache.Cache[Stats]
 	anonCache *cache.Cache[[]ranked]
@@ -327,11 +326,25 @@ func (s *Service) Following(ctx context.Context, userID string, before int64, li
 	return items, next, err
 }
 
+// followingIDs returns who the viewer follows. The list is cached in Redis
+// (shared by every pod) and the feed worker drops it the moment a follow or
+// unfollow event arrives, so a new follow shows up in Following right away.
+// A version number guards the race where a slow read of the old list would
+// otherwise be cached after the drop.
 func (s *Service) followingIDs(ctx context.Context, userID string) ([]string, error) {
 	s.init()
-	if ids, ok := s.following.Get(userID); ok {
-		return ids, nil
+	ck, vk := uKey(userID, "f"), uKey(userID, "fv")
+	pipe := s.R.Pipeline()
+	cached := pipe.Get(ctx, ck)
+	ver := pipe.Get(ctx, vk)
+	_, _ = pipe.Exec(ctx)
+	if raw, err := cached.Bytes(); err == nil {
+		var ids []string
+		if json.Unmarshal(raw, &ids) == nil {
+			return ids, nil
+		}
 	}
+	v, _ := ver.Int64()
 	if s.SocialURL == "" {
 		return nil, nil
 	}
@@ -351,8 +364,26 @@ func (s *Service) followingIDs(ctx context.Context, userID string) ([]string, er
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&body); err != nil {
 		return nil, fmt.Errorf("social following: %w", err)
 	}
-	s.following.Set(userID, body.IDs)
+	if raw, err := json.Marshal(body.IDs); err == nil {
+		_ = setIfVersion.Run(ctx, s.R, []string{ck, vk}, raw, int(followingTTL.Seconds()), v).Err()
+	}
 	return body.IDs, nil
+}
+
+const followingTTL = 5 * time.Minute
+
+// setIfVersion caches the list only if no follow change happened since it
+// was read (KEYS: cache, version; ARGV: value, ttl, version seen).
+var setIfVersion = redis.NewScript(`
+local v = tonumber(redis.call('GET', KEYS[2]) or '0')
+if v == tonumber(ARGV[3]) then redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2]) return 1 end
+return 0`)
+
+// dropFollowing invalidates a viewer's cached follow list (worker side).
+func dropFollowing(ctx context.Context, pipe redis.Pipeliner, userID string) {
+	pipe.Incr(ctx, uKey(userID, "fv"))
+	pipe.Expire(ctx, uKey(userID, "fv"), 24*time.Hour)
+	pipe.Del(ctx, uKey(userID, "f"))
 }
 
 // Impressions records what the viewer watched: marks it seen and hands it
