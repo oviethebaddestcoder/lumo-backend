@@ -102,13 +102,9 @@ func (s *Service) Open(ctx context.Context, me, other string) (Conversation, err
 	var id string
 	err := s.Pool.QueryRow(ctx, `SELECT id::text FROM conversations WHERE user_low = $1 AND user_high = $2`, lo, hi).Scan(&id)
 	if db.IsNoRows(err) {
-		// New chat: rate limited to stop spam runs.
 		limit := s.NewChatsPerDay
 		if limit <= 0 {
 			limit = 50
-		}
-		if r, _ := s.limiter().Allow(ctx, "new:"+me, limit, 24*time.Hour); !r.Allowed {
-			return Conversation{}, ErrTooMany
 		}
 		err = db.InTx(ctx, s.Pool, func(tx pgx.Tx) error {
 			id = events.NewID()
@@ -116,8 +112,14 @@ func (s *Service) Open(ctx context.Context, me, other string) (Conversation, err
 			if err != nil {
 				return err
 			}
-			if tag.RowsAffected() == 0 { // created concurrently
+			if tag.RowsAffected() == 0 { // created concurrently: not a new chat, nothing to count
 				return tx.QueryRow(ctx, `SELECT id::text FROM conversations WHERE user_low = $1 AND user_high = $2`, lo, hi).Scan(&id)
+			}
+			// A new chat: rate limited to stop spam runs. Counted only by the
+			// call that actually creates it (a double-tap mustn't use up two
+			// slots or fail); over the limit, the insert rolls back.
+			if r, _ := s.limiter().Allow(ctx, "new:"+me, limit, 24*time.Hour); !r.Allowed {
+				return ErrTooMany
 			}
 			_, err = tx.Exec(ctx, `INSERT INTO members (user_id, conversation_id, peer_id, hidden) VALUES ($1, $3, $2, false), ($2, $3, $1, true)`, me, other, id)
 			return err
