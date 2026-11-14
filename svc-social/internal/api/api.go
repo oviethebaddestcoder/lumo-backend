@@ -40,6 +40,8 @@ func (a *API) Routes() http.Handler {
 	mux.Handle("POST /v1/social/blocks/{user_id}", priv(a.block(true)))
 	mux.Handle("DELETE /v1/social/blocks/{user_id}", priv(a.block(false)))
 	mux.Handle("POST /v1/social/reports", priv(a.report))
+	mux.Handle("GET /v1/social/me/followers-gained", priv(a.followersGained))
+	mux.Handle("GET /v1/social/me/comments", priv(a.commentsOnMine))
 
 	mux.Handle("GET /internal/social/users/{id}/follower-ids", internal(a.followerIDs))
 	mux.Handle("GET /internal/social/users/{id}/following-ids", internal(a.followingIDs))
@@ -195,5 +197,26 @@ func (a *API) followingIDs(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"ids": ids})
+	return nil
+}
+
+func (a *API) followersGained(w http.ResponseWriter, r *http.Request) error {
+	p, _ := auth.User(r)
+	days, _ := strconv.Atoi(r.URL.Query().Get("days"))
+	n, err := a.Svc.FollowersGained(r.Context(), p.UserID, days)
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, map[string]int64{"count": n})
+	return nil
+}
+
+func (a *API) commentsOnMine(w http.ResponseWriter, r *http.Request) error {
+	p, _ := auth.User(r)
+	items, next, err := a.Svc.CommentsOnMyVideos(r.Context(), p.UserID, r.URL.Query().Get("cursor"), 0)
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, httpx.Page[app.Comment]{Items: items, NextCursor: next})
 	return nil
 }

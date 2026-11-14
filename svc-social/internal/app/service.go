@@ -548,3 +548,62 @@ func (s *Service) OnModeration(ctx context.Context, e events.Envelope) error {
 	}
 	return nil
 }
+
+// FollowersGained counts new followers in the last `days` days.
+func (s *Service) FollowersGained(ctx context.Context, userID string, days int) (int64, error) {
+	if days <= 0 || days > 90 {
+		days = 7
+	}
+	var n int64
+	err := s.Pool.QueryRow(ctx, `SELECT count(*) FROM followers WHERE followee_id = $1 AND created_at > now() - make_interval(days => $2)`,
+		userID, days).Scan(&n)
+	return n, err
+}
+
+// CommentsOnMyVideos lists the newest top-level comments across a creator's videos.
+func (s *Service) CommentsOnMyVideos(ctx context.Context, ownerID, cursor string, limit int) ([]Comment, string, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 30
+	}
+	if len(cursor) != 36 {
+		cursor = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+	}
+	rows, err := s.Pool.Query(ctx, `SELECT c.id::text, c.video_id::text, c.user_id::text, c.text, c.created_at
+		FROM comments c JOIN videos v ON v.video_id = c.video_id
+		WHERE v.owner_id = $1 AND c.deleted_at IS NULL AND c.id < $2 ORDER BY c.id DESC LIMIT $3`, ownerID, cursor, limit)
+	if err != nil {
+		return nil, "", err
+	}
+	type row struct {
+		id, video, user, text string
+		at                    time.Time
+	}
+	list, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (row, error) {
+		var x row
+		return x, r.Scan(&x.id, &x.video, &x.user, &x.text, &x.at)
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	ids := make([]string, len(list))
+	for i, x := range list {
+		ids[i] = x.user
+	}
+	users := map[string]events.UserPublic{}
+	if s.Users != nil {
+		users, _ = s.Users.Many(ctx, ids)
+	}
+	out := make([]Comment, len(list))
+	for i, x := range list {
+		u := users[x.user]
+		if u.ID == "" {
+			u = events.UserPublic{ID: x.user}
+		}
+		out[i] = Comment{ID: x.id, VideoID: x.video, User: u, Text: x.text, CreatedAt: x.at}
+	}
+	next := ""
+	if len(out) == limit {
+		next = out[len(out)-1].ID
+	}
+	return out, next, nil
+}

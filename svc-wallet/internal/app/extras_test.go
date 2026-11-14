@@ -67,6 +67,10 @@ func TestStatsLevelsAndWeeklyDiamonds(t *testing.T) {
 	if err != nil || st.CoinsSpent != 60 || st.Level != 2 || st.NextLevelAt != 200 {
 		t.Fatalf("sender stats %+v %v", st, err)
 	}
+	days, err := s.Earnings(ctx, host, 7)
+	if err != nil || len(days) != 7 || days[6].Diamonds != 30 || days[0].Diamonds != 0 {
+		t.Fatalf("earnings %+v %v", days, err)
+	}
 	hs, _ := s.Stats(ctx, host)
 	if hs.DiamondsWeek != 30 || hs.DiamondsEarned != 30 || hs.Level != 1 {
 		t.Fatalf("host stats %+v", hs)

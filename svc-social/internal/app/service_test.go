@@ -108,6 +108,9 @@ func TestFollowLikeCountsAndBlocks(t *testing.T) {
 	if c.Followers != 40 || vc[0].Likes != 40 || c.LikesReceived != 40 {
 		t.Fatalf("followers=%d likes=%d received=%d", c.Followers, vc[0].Likes, c.LikesReceived)
 	}
+	if n, err := s.FollowersGained(ctx, star, 7); err != nil || n != 40 {
+		t.Fatalf("followers gained %d %v", n, err)
+	}
 	list, next, _ := s.List(ctx, star, "followers", "", 25)
 	if len(list) != 25 || next == "" {
 		t.Fatalf("page 1: %d %q", len(list), next)
@@ -134,6 +137,10 @@ func TestFollowLikeCountsAndBlocks(t *testing.T) {
 	cm, err := s.Comment(ctx, fan, video, "", "great video")
 	if err != nil {
 		t.Fatal(err)
+	}
+	mine, _, err := s.CommentsOnMyVideos(ctx, star, "", 10)
+	if err != nil || len(mine) != 1 || mine[0].ID != cm.ID || mine[0].VideoID != video {
+		t.Fatalf("comments on my videos %+v %v", mine, err)
 	}
 	if err := s.DeleteComment(ctx, events.NewID(), cm.ID, false); err == nil {
 		t.Fatal("stranger deleted comment")

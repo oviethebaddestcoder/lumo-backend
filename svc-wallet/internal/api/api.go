@@ -38,6 +38,7 @@ func (a *API) Routes() http.Handler {
 	mux.Handle("POST /v1/wallet/payouts", priv(a.payout))
 	mux.Handle("GET /v1/wallet/payouts", priv(a.myPayouts))
 	mux.Handle("GET /v1/wallet/stats", priv(a.stats))
+	mux.Handle("GET /v1/wallet/earnings", priv(a.earnings))
 	mux.Handle("GET /v1/wallet/levels", pub(a.levels))
 	mux.Handle("GET /v1/wallet/backpack", priv(a.backpack))
 	mux.Handle("POST /v1/wallet/checkin", priv(a.checkin))
@@ -383,5 +384,16 @@ func (a *API) adminReject(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	httpx.JSON(w, http.StatusOK, po)
+	return nil
+}
+
+func (a *API) earnings(w http.ResponseWriter, r *http.Request) error {
+	p, _ := auth.User(r)
+	days, _ := strconv.Atoi(r.URL.Query().Get("days"))
+	list, err := a.Svc.Earnings(r.Context(), p.UserID, days)
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"items": list})
 	return nil
 }

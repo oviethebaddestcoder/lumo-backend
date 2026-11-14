@@ -582,3 +582,26 @@ func ignoreNotFound(err error) error {
 	}
 	return err
 }
+
+type DayAmount struct {
+	Day      string `json:"day"` // YYYY-MM-DD (UTC)
+	Diamonds int64  `json:"diamonds"`
+}
+
+// Earnings is diamonds received per UTC day for the last `days` days, zero-filled.
+func (s *Service) Earnings(ctx context.Context, userID string, days int) ([]DayAmount, error) {
+	if days <= 0 || days > 90 {
+		days = 7
+	}
+	rows, err := s.userShard(userID).Pool.Query(ctx, `SELECT to_char(d, 'YYYY-MM-DD'), COALESCE(sum(c.diamonds), 0)
+		FROM generate_series((now() AT TIME ZONE 'UTC')::date - ($2::int - 1), (now() AT TIME ZONE 'UTC')::date, interval '1 day') d
+		LEFT JOIN gift_credits c ON c.receiver_id = $1 AND (c.credited_at AT TIME ZONE 'UTC')::date = d::date
+		GROUP BY d ORDER BY d`, userID, days)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (DayAmount, error) {
+		var x DayAmount
+		return x, r.Scan(&x.Day, &x.Diamonds)
+	})
+}

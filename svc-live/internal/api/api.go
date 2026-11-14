@@ -30,6 +30,8 @@ func (a *API) Routes() http.Handler {
 	mux.Handle("POST /v1/live/rooms", priv(a.start))
 	mux.Handle("POST /v1/live/rooms/{id}/join", priv(a.join))
 	mux.Handle("POST /v1/live/rooms/{id}/end", priv(a.end))
+	mux.Handle("GET /v1/live/me/rooms", priv(a.myRooms))
+	mux.Handle("GET /v1/live/me/summary", priv(a.mySummary))
 	mux.Handle("GET /v1/live/stream-key", priv(a.streamKey))
 	mux.Handle("POST /v1/live/stream-key/rotate", priv(a.rotateKey))
 	mux.Handle("POST /v1/live/pk/invite", priv(a.pkInvite))
@@ -188,5 +190,26 @@ func (a *API) webhook(w http.ResponseWriter, r *http.Request) error {
 		return err // 5xx: LiveKit retries
 	}
 	w.WriteHeader(http.StatusOK)
+	return nil
+}
+
+func (a *API) myRooms(w http.ResponseWriter, r *http.Request) error {
+	p, _ := auth.User(r)
+	items, next, err := a.Svc.HostRooms(r.Context(), p.UserID, r.URL.Query().Get("cursor"), 0)
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, httpx.Page[app.HostRoom]{Items: items, NextCursor: next})
+	return nil
+}
+
+func (a *API) mySummary(w http.ResponseWriter, r *http.Request) error {
+	p, _ := auth.User(r)
+	days, _ := strconv.Atoi(r.URL.Query().Get("days"))
+	sum, err := a.Svc.HostSummaryFor(r.Context(), p.UserID, days)
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, sum)
 	return nil
 }

@@ -139,6 +139,18 @@ func TestRoomLifecycleViewersAndGifts(t *testing.T) {
 	if started != 1 || ended != 1 {
 		t.Fatalf("outbox started=%d ended=%d", started, ended)
 	}
+	// Studio: history and 7-day summary for the host only.
+	hist, _, err := s.HostRooms(ctx, h.UserID, "", 10)
+	if err != nil || len(hist) != 1 || hist[0].Status != "ended" || hist[0].GiftCoins != 100 || hist[0].EndedAt == nil {
+		t.Fatalf("host rooms %+v %v", hist, err)
+	}
+	sum, err := s.HostSummaryFor(ctx, h.UserID, 7)
+	if err != nil || sum.Sessions != 1 || sum.GiftCoins != 100 {
+		t.Fatalf("summary %+v %v", sum, err)
+	}
+	if other, _, _ := s.HostRooms(ctx, events.NewID(), "", 10); len(other) != 0 {
+		t.Fatalf("leaked rooms %+v", other)
+	}
 }
 
 func TestPKBattle(t *testing.T) {
