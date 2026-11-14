@@ -43,7 +43,11 @@ func build(ctx context.Context, c cfg) (*fapp.Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &fapp.Service{R: rdb, Users: userdir.New(c.identity), SocialURL: c.social, InternalToken: c.internal,
+	arms, err := fapp.ArmsFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	return &fapp.Service{R: rdb, Users: userdir.New(c.identity), SocialURL: c.social, InternalToken: c.internal, Arms: arms,
 		HTTP: &http.Client{Timeout: 2 * time.Second}}, nil
 }
 
@@ -83,7 +87,14 @@ func worker(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return app.Group(ctx, videos.Run, social.Run,
+	// Watch signals: batched, keyed by viewer so each viewer's profile is
+	// updated in order by one partition worker.
+	signals, err := kafkax.NewConsumer(c.kafka, kafkax.ConsumerOptions{Group: "feed-signals", Topics: []string{events.TopicFeedSignals},
+		HandleBatch: s.OnImpressions, BatchSize: 1000})
+	if err != nil {
+		return err
+	}
+	return app.Group(ctx, videos.Run, social.Run, signals.Run,
 		func(ctx context.Context) error {
 			t := time.NewTicker(10 * time.Minute)
 			defer t.Stop()

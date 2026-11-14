@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -127,7 +128,11 @@ func (s *Service) CreateImageUpload(ctx context.Context, p auth.Principal, in Im
 	key := "images/" + in.Purpose + "/" + p.UserID + "/" + hex.EncodeToString(b[:]) + "." + ext
 	const ttl = 10 * time.Minute
 	return ImageUpload{
-		UploadURL: s.S3.Presign("PUT", key, nil, ttl),
+		// Size and type are signed: S3 refuses a bigger file or another type.
+		UploadURL: s.S3.PresignHeaders("PUT", key, nil, ttl, map[string]string{
+			"Content-Length": strconv.FormatInt(in.SizeBytes, 10),
+			"Content-Type":   in.ContentType,
+		}),
 		URL:       strings.TrimRight(s.CDNURL, "/") + "/" + key,
 		ExpiresAt: time.Now().Add(ttl).Unix(),
 	}, nil

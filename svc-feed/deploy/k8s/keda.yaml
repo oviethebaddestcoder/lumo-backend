@@ -1,12 +1,12 @@
 # Scale workers on Kafka consumer lag (requires KEDA). Workers never
-# exceed the partition count of their main topic (12 by default).
+# exceed the partition count of their main topic (feed.impressions has 48).
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
 metadata: { name: svc-feed-worker }
 spec:
   scaleTargetRef: { name: svc-feed-worker }
   minReplicaCount: 1
-  maxReplicaCount: 12
+  maxReplicaCount: 48
   triggers:
     - type: kafka
       metadata:
@@ -14,3 +14,9 @@ spec:
         consumerGroup: feed-social
         topic: social.events
         lagThreshold: "500"
+    - type: kafka
+      metadata:
+        bootstrapServers: kafka-bootstrap:9092
+        consumerGroup: feed-signals
+        topic: feed.impressions
+        lagThreshold: "5000"

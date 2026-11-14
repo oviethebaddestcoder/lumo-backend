@@ -98,6 +98,9 @@ func (s *Service) TrimInbox(ctx context.Context) error {
 
 // OnWallet tells users when a cash-out settles.
 func (s *Service) OnWallet(ctx context.Context, e events.Envelope) error {
+	if e.Type == events.PayoutAccountChanged {
+		return s.onPayoutAccount(ctx, e)
+	}
 	if e.Type != events.PayoutSettled || !s.once(ctx, e.ID, 24*time.Hour) {
 		return nil
 	}
@@ -116,6 +119,28 @@ func (s *Service) OnWallet(ctx context.Context, e events.Envelope) error {
 		p.Title, p.Body = "Cash-out failed", "The bank transfer didn't go through. Your diamonds were returned."
 	}
 	if err := s.addInbox(ctx, d.UserID, "payout", "", p); err != nil {
+		return err
+	}
+	return s.sendTo(ctx, "account", []string{d.UserID}, p)
+}
+
+// onPayoutAccount is a security alert: the cash-out bank account changed.
+// It always sends (it's an account notice, not a marketing push).
+func (s *Service) onPayoutAccount(ctx context.Context, e events.Envelope) error {
+	if !s.once(ctx, e.ID, 24*time.Hour) {
+		return nil
+	}
+	var d events.PayoutAccountChangedData
+	if e.Decode(&d) != nil || d.UserID == "" {
+		return nil
+	}
+	p := Push{Title: "Bank account changed", Data: map[string]string{"type": "payout_account"},
+		Body: fmt.Sprintf("Cash-outs now go to %s ••%s. Cash-outs pause for 48 hours. If this wasn't you, change your password now.", d.BankName, d.AccountLast4)}
+	if d.FirstTime {
+		p.Title = "Bank account added"
+		p.Body = fmt.Sprintf("Cash-outs will go to %s ••%s. If this wasn't you, change your password now.", d.BankName, d.AccountLast4)
+	}
+	if err := s.addInbox(ctx, d.UserID, "security", "", p); err != nil {
 		return err
 	}
 	return s.sendTo(ctx, "account", []string{d.UserID}, p)

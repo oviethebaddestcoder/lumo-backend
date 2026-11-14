@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -156,8 +157,11 @@ func TestCheckinAndBackpackGifts(t *testing.T) {
 	}
 }
 
-// fakePaystack answers the transfer endpoints and records transfers.
+// fakePaystack answers the transfer endpoints and records transfers (and
+// their references, which must be unique like Paystack's).
 func fakePaystack(t *testing.T, transfers *atomic.Int64) *stores.Paystack {
+	var mu sync.Mutex
+	refs := map[string]bool{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasPrefix(r.URL.Path, "/bank/resolve"):
@@ -170,12 +174,28 @@ func fakePaystack(t *testing.T, transfers *atomic.Int64) *stores.Paystack {
 		case r.URL.Path == "/bank":
 			w.Write([]byte(`{"status":true,"data":[{"code":"058","name":"GTBank","active":true},{"code":"999","name":"Old","active":false}]}`))
 		case r.URL.Path == "/transferrecipient":
-			w.Write([]byte(`{"status":true,"data":{"recipient_code":"RCP_test"}}`))
+			var in map[string]any
+			json.NewDecoder(r.Body).Decode(&in)
+			code := "RCP_test"
+			if in["account_number"] != "0123456789" {
+				code = "RCP_other"
+			}
+			w.Write([]byte(`{"status":true,"data":{"recipient_code":"` + code + `"}}`))
 		case r.URL.Path == "/transfer":
 			var in map[string]any
 			json.NewDecoder(r.Body).Decode(&in)
-			if in["recipient"] != "RCP_test" || in["reference"] == "" {
+			ref, _ := in["reference"].(string)
+			if in["recipient"] != "RCP_test" || ref == "" {
 				w.WriteHeader(400)
+				return
+			}
+			mu.Lock()
+			dup := refs[ref]
+			refs[ref] = true
+			mu.Unlock()
+			if dup { // Paystack refuses a reused reference: no second transfer
+				w.WriteHeader(400)
+				w.Write([]byte(`{"status":false,"message":"Duplicate Transfer Reference"}`))
 				return
 			}
 			transfers.Add(1)
@@ -232,8 +252,11 @@ func TestBankCashoutFlow(t *testing.T) {
 	if err != nil || got.Status != "processing" || transfers.Load() != 1 {
 		t.Fatalf("approve %+v %v transfers=%d", got, err, transfers.Load())
 	}
-	if _, err := s.ApprovePayout(ctx, p1.PayoutID, reviewer); err == nil {
-		t.Fatal("approved twice")
+	// Approving again while processing retries with the same reference;
+	// Paystack refuses the duplicate, so no second transfer goes out.
+	s.ApprovePayout(ctx, p1.PayoutID, reviewer)
+	if transfers.Load() != 1 {
+		t.Fatalf("retry sent a second transfer: %d", transfers.Load())
 	}
 	for i := 0; i < 2; i++ {
 		if err := s.PaystackTransfer(ctx, "transfer.success", p1.PayoutID); err != nil {
@@ -276,6 +299,72 @@ func TestBankCashoutFlow(t *testing.T) {
 	// Unknown references are ignored (Paystack sends every transfer on the account).
 	if err := s.PaystackTransfer(ctx, "transfer.success", "not-ours"); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := s.ApprovePayout(ctx, p1.PayoutID, reviewer); err == nil {
+		t.Fatal("approved a paid cash-out")
+	}
+
+	// Approve and reject racing: once approved (money sent), reject must fail
+	// and must not refund.
+	p4, _ := s.RequestPayout(ctx, host, "p4", 100)
+	if _, err := s.ApprovePayout(ctx, p4.PayoutID, reviewer); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RejectPayout(ctx, p4.PayoutID, reviewer, "late reject"); err == nil {
+		t.Fatal("rejected a cash-out that was already approved")
+	}
+	if b, _ := s.Balance(ctx, host); b.Diamonds != 0 {
+		t.Fatalf("diamonds after approve+reject = %d, want 0", b.Diamonds)
+	}
+	// Paid, then the bank sends it back: diamonds return once.
+	s.PaystackTransfer(ctx, "transfer.success", p4.PayoutID)
+	for i := 0; i < 2; i++ {
+		if err := s.PaystackTransfer(ctx, "transfer.reversed", p4.PayoutID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if b, _ := s.Balance(ctx, host); b.Diamonds != 100 {
+		t.Fatalf("diamonds after reversal = %d, want 100", b.Diamonds)
+	}
+	// A webhook for a payout nobody approved is dropped, not retried forever.
+	p5, _ := s.RequestPayout(ctx, host, "p5", 100)
+	if err := s.PaystackTransfer(ctx, "transfer.success", p5.PayoutID); err != nil {
+		t.Fatalf("impossible webhook should be ignored: %v", err)
+	}
+	// Nobody reviews their own cash-out.
+	if _, err := s.ApprovePayout(ctx, p5.PayoutID, host); !errors.Is(err, app.ErrSelfReview) {
+		t.Fatalf("self-approve: %v", err)
+	}
+	if _, err := s.RejectPayout(ctx, p5.PayoutID, host, "mine"); !errors.Is(err, app.ErrSelfReview) {
+		t.Fatalf("self-reject: %v", err)
+	}
+	if _, err := s.RejectPayout(ctx, p5.PayoutID, reviewer, "  "); err == nil {
+		t.Fatal("reject without a reason")
+	}
+	if _, err := s.RejectPayout(ctx, p5.PayoutID, reviewer, "Duplicate account"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Setting the same account again changes nothing; a new account pauses
+	// cash-outs for 48 hours.
+	if _, err := s.SetPayoutAccount(ctx, host, "058", "0123456789"); err != nil {
+		t.Fatal(err)
+	}
+	p6, err := s.RequestPayout(ctx, host, "p6", 100)
+	if err != nil {
+		t.Fatalf("same account again triggered the cool-down: %v", err)
+	}
+	s.RejectPayout(ctx, p6.PayoutID, reviewer, "test")
+	if _, err := s.SetPayoutAccount(ctx, host, "058", "0123456780"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RequestPayout(ctx, host, "p7", 100); !errors.Is(err, app.ErrPayoutCooldown) {
+		t.Fatalf("cash-out right after changing bank: %v", err)
+	}
+	var alerts int
+	pools[1].QueryRow(ctx, `SELECT count(*) FROM outbox WHERE payload->>'type' = $1`, events.PayoutAccountChanged).Scan(&alerts)
+	if alerts != 2 { // first set + change; the identical re-set sends none
+		t.Fatalf("bank-change alerts = %d, want 2", alerts)
 	}
 	for i, p := range pools {
 		u, bad, err := ledger.Reconcile(ctx, p)

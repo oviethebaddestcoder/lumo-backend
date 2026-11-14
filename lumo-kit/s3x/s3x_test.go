@@ -19,3 +19,19 @@ func TestPresignMatchesAWSExample(t *testing.T) {
 		t.Fatalf("got %s", u)
 	}
 }
+
+func TestPresignHeadersSignsSizeAndType(t *testing.T) {
+	c := &Client{Endpoint: "https://bucket.s3.amazonaws.com", Region: "eu-west-1", AccessKey: "AK", SecretKey: "SK"}
+	a := c.PresignHeaders("PUT", "images/a.jpg", nil, time.Minute, map[string]string{"Content-Length": "100", "Content-Type": "image/jpeg"})
+	b := c.PresignHeaders("PUT", "images/a.jpg", nil, time.Minute, map[string]string{"Content-Length": "101", "Content-Type": "image/jpeg"})
+	if !strings.Contains(a, "X-Amz-SignedHeaders=content-length%3Bcontent-type%3Bhost") {
+		t.Fatalf("signed headers missing: %s", a)
+	}
+	sig := func(u string) string { return u[strings.LastIndex(u, "X-Amz-Signature=")+16:] }
+	if sig(a) == sig(b) {
+		t.Fatal("a different size must change the signature")
+	}
+	if plain := c.Presign("PUT", "images/a.jpg", nil, time.Minute); !strings.Contains(plain, "X-Amz-SignedHeaders=host") {
+		t.Fatalf("plain presign changed: %s", plain)
+	}
+}

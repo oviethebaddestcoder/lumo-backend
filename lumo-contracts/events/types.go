@@ -35,12 +35,15 @@ const (
 
 	ChatSent = "chat.message.sent"
 
-	GiftSent         = "wallet.gift.sent"
-	CoinsPurchased   = "wallet.coins.purchased"
-	CoinsReversed    = "wallet.coins.reversed"
-	PayoutRequested  = "wallet.payout.requested"
-	PayoutSettled    = "wallet.payout.settled"
-	DiamondsCredited = "wallet.diamonds.credited"
+	GiftSent        = "wallet.gift.sent"
+	CoinsPurchased  = "wallet.coins.purchased"
+	CoinsReversed   = "wallet.coins.reversed"
+	PayoutRequested = "wallet.payout.requested"
+	PayoutSettled   = "wallet.payout.settled"
+	// PayoutAccountChanged: the bank account for cash-outs was set or changed
+	// (security alert to the account owner).
+	PayoutAccountChanged = "wallet.payout_account.changed"
+	DiamondsCredited     = "wallet.diamonds.credited"
 
 	ModerationAction = "moderation.action.taken"
 
@@ -247,6 +250,14 @@ type PayoutRequestedData struct {
 	Diamonds int64  `json:"diamonds"`
 }
 
+// PayoutAccountChangedData carries display-safe bank details only.
+type PayoutAccountChangedData struct {
+	UserID       string `json:"user_id"`
+	BankName     string `json:"bank_name"`
+	AccountLast4 string `json:"account_last4"`
+	FirstTime    bool   `json:"first_time"`
+}
+
 // PayoutSettledData is sent when a cash-out is paid, rejected or fails.
 type PayoutSettledData struct {
 	PayoutID   string `json:"payout_id"`
@@ -278,10 +289,25 @@ type ModerationActionData struct {
 
 // ---- feed ----
 
+// ImpressionData is one finished view, reported by the client when the
+// viewer leaves the video. It feeds view counts (svc-media) and the
+// recommender (svc-feed). All fields beyond VideoID and WatchMS are optional,
+// so older clients keep working.
 type ImpressionData struct {
-	UserID  string    `json:"user_id"`
-	VideoID string    `json:"video_id"`
-	WatchMS int64     `json:"watch_ms"`
+	UserID  string `json:"user_id"`
+	VideoID string `json:"video_id"`
+	WatchMS int64  `json:"watch_ms"`
+	// Loops counts full replays of a short video.
+	Loops int `json:"loops,omitempty"`
+	// Skipped: the viewer swiped away almost immediately.
+	Skipped bool `json:"skipped,omitempty"`
+	// Shared: the viewer shared or copied the link during this view.
+	Shared bool `json:"shared,omitempty"`
+	// Source and Arm echo the rec_source / rec_arm the feed served the
+	// video with, so each retrieval path and A/B arm can be measured.
+	Source  string    `json:"source,omitempty"`
+	Arm     string    `json:"arm,omitempty"`
+	Surface string    `json:"surface,omitempty"` // foryou | following | watch | profile | tag | search
 	At      time.Time `json:"at"`
 }
 

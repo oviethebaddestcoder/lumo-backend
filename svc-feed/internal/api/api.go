@@ -8,6 +8,7 @@ import (
 
 	"github.com/oviethebaddestcoder/lumo-backend/lumo-contracts/events"
 	"github.com/oviethebaddestcoder/lumo-backend/lumo-kit/auth"
+	"github.com/oviethebaddestcoder/lumo-backend/lumo-kit/errs"
 	"github.com/oviethebaddestcoder/lumo-backend/lumo-kit/httpx"
 	"github.com/oviethebaddestcoder/lumo-backend/svc-feed/internal/app"
 )
@@ -25,6 +26,10 @@ func (a *API) Routes() http.Handler {
 	mux.Handle("GET /v1/feed/watch", opt(a.forYou("long")))
 	mux.Handle("GET /v1/feed/following", priv(a.following))
 	mux.Handle("POST /v1/feed/impressions", priv(a.impressions))
+	mux.Handle("POST /v1/feed/not-interested", priv(a.notInterested))
+	mux.Handle("GET /v1/feed/me/interests", priv(a.interests))
+	mux.Handle("DELETE /v1/feed/me/interests/{tag}", priv(a.removeInterest))
+	mux.Handle("POST /v1/feed/me/reset", priv(a.reset))
 	return httpx.Chain(mux, httpx.Timeout(5*time.Second))
 }
 
@@ -69,5 +74,55 @@ func (a *API) impressions(w http.ResponseWriter, r *http.Request) error {
 	}
 	a.Svc.Impressions(r.Context(), p.UserID, in.Items)
 	w.WriteHeader(http.StatusAccepted)
+	return nil
+}
+
+func (a *API) notInterested(w http.ResponseWriter, r *http.Request) error {
+	p, _ := auth.User(r)
+	var in struct {
+		VideoID string `json:"video_id"`
+	}
+	if err := httpx.Decode(w, r, &in); err != nil {
+		return err
+	}
+	if len(in.VideoID) != 36 {
+		return errs.BadRequest("video_invalid", "Give a video.")
+	}
+	if err := a.Svc.NotInterested(r.Context(), p.UserID, in.VideoID); err != nil {
+		return err
+	}
+	w.WriteHeader(http.StatusNoContent)
+	return nil
+}
+
+func (a *API) interests(w http.ResponseWriter, r *http.Request) error {
+	p, _ := auth.User(r)
+	items, err := a.Svc.Interests(r.Context(), p.UserID)
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"items": items})
+	return nil
+}
+
+func (a *API) removeInterest(w http.ResponseWriter, r *http.Request) error {
+	p, _ := auth.User(r)
+	tag := r.PathValue("tag")
+	if tag == "" || len(tag) > 50 {
+		return errs.BadRequest("tag_invalid", "Give a hashtag.")
+	}
+	if err := a.Svc.RemoveInterest(r.Context(), p.UserID, tag); err != nil {
+		return err
+	}
+	w.WriteHeader(http.StatusNoContent)
+	return nil
+}
+
+func (a *API) reset(w http.ResponseWriter, r *http.Request) error {
+	p, _ := auth.User(r)
+	if err := a.Svc.Reset(r.Context(), p.UserID); err != nil {
+		return err
+	}
+	w.WriteHeader(http.StatusNoContent)
 	return nil
 }

@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"path"
 	"slices"
 	"sort"
 	"strconv"
@@ -135,6 +136,11 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !g.cors(w, r) {
 		return
 	}
+	if !canonicalPath(r) {
+		denied.WithLabelValues("bad_path").Inc()
+		httpx.Error(w, r, errs.BadRequest("bad_path", "Invalid request path."))
+		return
+	}
 	route := g.match(r.URL.Path)
 	if route == nil {
 		denied.WithLabelValues("no_route").Inc()
@@ -177,6 +183,23 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	route.proxy.ServeHTTP(w, r)
+}
+
+// canonicalPath rejects paths that could be read differently upstream:
+// dot segments, doubled slashes, backslashes, and encoded "/" or "\"
+// (so /v1/media/..%2f..%2finternal can't match one route here and mean
+// another inside a service).
+func canonicalPath(r *http.Request) bool {
+	p := r.URL.Path
+	if p == "" || p[0] != '/' || strings.ContainsAny(p, "\\\x00") {
+		return false
+	}
+	clean := path.Clean(p)
+	if clean != p && clean+"/" != p {
+		return false
+	}
+	raw := strings.ToLower(r.URL.EscapedPath())
+	return !strings.Contains(raw, "%2f") && !strings.Contains(raw, "%5c") && !strings.Contains(raw, "%00")
 }
 
 func (g *Gateway) match(path string) *Route {

@@ -55,6 +55,14 @@ func (c *Client) objectURL(key string, q url.Values) *url.URL {
 // Presign returns a URL valid for expiry that allows method on key.
 // For multipart parts pass q = {"partNumber": n, "uploadId": id}.
 func (c *Client) Presign(method, key string, q url.Values, expiry time.Duration) string {
+	return c.PresignHeaders(method, key, q, expiry, nil)
+}
+
+// PresignHeaders is Presign with extra signed headers. The request must
+// then carry exactly those headers, so signing Content-Length and
+// Content-Type makes S3 refuse an upload of any other size or type than
+// the one that was approved.
+func (c *Client) PresignHeaders(method, key string, q url.Values, expiry time.Duration, headers map[string]string) string {
 	now := nowFunc().UTC()
 	amzDate := now.Format("20060102T150405Z")
 	date := now.Format("20060102")
@@ -68,9 +76,24 @@ func (c *Client) Presign(method, key string, q url.Values, expiry time.Duration)
 	q.Set("X-Amz-Credential", c.AccessKey+"/"+scope)
 	q.Set("X-Amz-Date", amzDate)
 	q.Set("X-Amz-Expires", strconv.Itoa(int(expiry.Seconds())))
-	q.Set("X-Amz-SignedHeaders", "host")
-	u := c.objectURL(key, q)
-	canonical := strings.Join([]string{method, u.EscapedPath(), u.RawQuery, "host:" + u.Host + "\n", "host", "UNSIGNED-PAYLOAD"}, "\n")
+	u := c.objectURL(key, nil)
+	hs := map[string]string{"host": u.Host}
+	for k, v := range headers {
+		hs[strings.ToLower(k)] = strings.TrimSpace(v)
+	}
+	names := make([]string, 0, len(hs))
+	for k := range hs {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	var canonHeaders strings.Builder
+	for _, n := range names {
+		canonHeaders.WriteString(n + ":" + hs[n] + "\n")
+	}
+	signed := strings.Join(names, ";")
+	q.Set("X-Amz-SignedHeaders", signed)
+	u = c.objectURL(key, q)
+	canonical := strings.Join([]string{method, u.EscapedPath(), u.RawQuery, canonHeaders.String(), signed, "UNSIGNED-PAYLOAD"}, "\n")
 	sig := c.signature(date, amzDate, scope, canonical)
 	u.RawQuery += "&X-Amz-Signature=" + sig
 	return u.String()

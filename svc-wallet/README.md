@@ -13,7 +13,13 @@ A **sharded double-entry ledger**. Users map to one of 4096 logical shards, whic
 - **Send gift** (`POST /v1/wallet/gifts/send`, `Idempotency-Key` header required): locks the sender's coin row, checks the balance, writes balanced entries and `wallet.gift.sent` via the outbox, all in one transaction on the sender's shard. A retried request returns the original receipt; it never charges twice.
 - **Credit hosts**: the `wallet-credit` consumer reads `wallet.gifts` (keyed by receiver, so one host's gifts are ordered) in batches, dedupes on `gift_send_id`, and applies **one** balance update per host per batch on the host's shard. A host receiving thousands of gifts a second costs one row update per batch, not thousands.
 - **Purchases**: Google Play (`obfuscatedAccountId` must match the user), App Store (`appAccountToken` must be the user ID), Paystack for the web wallet. Each receipt is claimed once **globally** (`purchase_claims` on the shard chosen by the receipt), then credited. Refunds/chargebacks reverse coins (balance may go negative).
-- **Payouts**: diamonds move to payout clearing with status `pending_review`; finance approves and pays out.
+- **Payouts (bank cash-outs via Paystack)**: diamonds move to payout clearing with status `pending_review`, then finance reviews. Every transition happens under the payout row lock:
+  - `pending_review → processing` (approve sends the transfer; the payout ID is the Paystack reference, so a retry while `processing` can never pay twice);
+  - `pending_review → rejected` (diamonds back; a cash-out that's already approved can't be rejected);
+  - `processing → paid | failed` (webhooks);
+  - `paid → failed` on `transfer.reversed` (diamonds back once).
+  - Nobody can review their own cash-out. Impossible webhooks are logged and dropped, not retried forever.
+  - **Account-takeover guard:** changing the bank account sends a security push (`wallet.payout_account.changed`) and pauses cash-outs for 48 hours. Setting it the first time doesn't pause them.
 - **Reconciliation** runs nightly: every transaction must sum to zero and cached balances must equal their entries (`wallet_reconcile_problems` metric, alert if > 0).
 
 **Store rules:** coins sold inside the Android app must use Google Play Billing in markets without Google's alternative-billing programs (Nigeria is not in them); iOS uses the App Store. Paystack (card, bank transfer, USSD) is for the web wallet and must not be linked from the app.
@@ -24,7 +30,7 @@ A **sharded double-entry ledger**. Users map to one of 4096 logical shards, whic
 
 ## Events
 
-- **Publishes:** `wallet.gifts` (`wallet.gift.sent`), `wallet.events` (`coins.purchased`, `coins.reversed`, `payout.requested`)
+- **Publishes:** `wallet.gifts` (`wallet.gift.sent`), `wallet.events` (`coins.purchased`, `coins.reversed`, `payout.requested`, `payout.settled`, `payout_account.changed`)
 - **Consumes:** `wallet.gifts` (credit hosts), `wallet.events` (retry Google consume)
 
 All events are published through the transactional outbox (written in the

@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
+	"net/http"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -360,12 +363,34 @@ func (s *Service) SetPayoutAccount(ctx context.Context, userID, bankCode, accoun
 		return PayoutAccount{}, err
 	}
 	pa := PayoutAccount{BankCode: bankCode, BankName: name, AccountLast4: accountNumber[6:], AccountName: holder, UpdatedAt: time.Now().UTC()}
-	_, err = s.userShard(userID).Pool.Exec(ctx, `INSERT INTO payout_accounts (user_id, bank_code, bank_name, account_last4, account_name, recipient_code)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		ON CONFLICT (user_id) DO UPDATE SET bank_code = $2, bank_name = $3, account_last4 = $4, account_name = $5,
-			recipient_code = $6, updated_at = now()`, userID, bankCode, name, pa.AccountLast4, holder, rc)
+	err = db.InTx(ctx, s.userShard(userID).Pool, func(tx pgx.Tx) error {
+		var prev *string
+		if err := tx.QueryRow(ctx, `SELECT recipient_code FROM payout_accounts WHERE user_id = $1 FOR UPDATE`, userID).Scan(&prev); err != nil && !db.IsNoRows(err) {
+			return err
+		}
+		if prev != nil && *prev == rc {
+			return nil // same account again: nothing changes, no cool-down
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO payout_accounts (user_id, bank_code, bank_name, account_last4, account_name, recipient_code)
+			VALUES ($1, $2, $3, $4, $5, $6)
+			ON CONFLICT (user_id) DO UPDATE SET bank_code = $2, bank_name = $3, account_last4 = $4, account_name = $5,
+				recipient_code = $6, updated_at = now(), changed_at = now()`, userID, bankCode, name, pa.AccountLast4, holder, rc); err != nil {
+			return err
+		}
+		// Security alert: a stolen account's first move is often to swap the bank.
+		return outbox.Insert(ctx, tx, events.TopicWalletEvents, events.MustNew(producer, events.PayoutAccountChanged, userID,
+			events.PayoutAccountChangedData{UserID: userID, BankName: name, AccountLast4: pa.AccountLast4, FirstTime: prev == nil}))
+	})
 	return pa, err
 }
+
+// PayoutAccountCooldown: cash-outs pause this long after the bank account
+// is changed (not when it's first set), so a hijacked account can't be
+// emptied before the owner sees the alert.
+const PayoutAccountCooldown = 48 * time.Hour
+
+var ErrPayoutCooldown = errs.Conflict("payout_account_cooldown",
+	"You changed your bank account recently. For your safety, cash-outs open 48 hours after a change.")
 
 func (s *Service) PayoutAccountOf(ctx context.Context, userID string) (*PayoutAccount, error) {
 	var pa PayoutAccount
@@ -456,19 +481,29 @@ func (s *Service) ApprovePayout(ctx context.Context, payoutID, reviewer string) 
 	var p Payout
 	var recipient *string
 	err = db.InTx(ctx, r.Pool, func(tx pgx.Tx) error {
-		var status string
-		if err := tx.QueryRow(ctx, `SELECT status, recipient_code FROM payouts WHERE id = $1 FOR UPDATE`, payoutID).Scan(&status, &recipient); err != nil {
+		var status, owner string
+		if err := tx.QueryRow(ctx, `SELECT status, recipient_code, user_id::text FROM payouts WHERE id = $1 FOR UPDATE`, payoutID).Scan(&status, &recipient, &owner); err != nil {
 			return err
 		}
-		if status != "pending_review" {
-			return errs.Conflict("payout_not_pending", "This cash-out was already reviewed.")
+		if owner == reviewer {
+			return ErrSelfReview
 		}
 		if recipient == nil || *recipient == "" {
 			return ErrNoPayoutAccount
 		}
 		var err error
-		p, err = scanPayout(tx.QueryRow(ctx, `UPDATE payouts SET status = 'processing', reviewed_by = $2, transfer_reference = $1::text,
-			updated_at = now() WHERE id = $1 RETURNING `+payoutCols, payoutID, reviewer))
+		switch status {
+		case "pending_review":
+			p, err = scanPayout(tx.QueryRow(ctx, `UPDATE payouts SET status = 'processing', reviewed_by = $2, transfer_reference = $1::text,
+				updated_at = now() WHERE id = $1 RETURNING `+payoutCols, payoutID, reviewer))
+		case "processing":
+			// Retry after an unknown outcome. The transfer reference is the
+			// payout ID, and Paystack refuses a second transfer with the same
+			// reference, so this can't pay twice.
+			p, err = scanPayout(tx.QueryRow(ctx, `SELECT `+payoutCols+` FROM payouts WHERE id = $1`, payoutID))
+		default:
+			return errs.Conflict("payout_not_pending", "This cash-out was already reviewed.")
+		}
 		return err
 	})
 	if err != nil {
@@ -487,29 +522,35 @@ func (s *Service) ApprovePayout(ctx context.Context, payoutID, reviewer string) 
 	return p, nil
 }
 
-// RejectPayout returns the diamonds to the user.
+var ErrSelfReview = errs.Forbidden("payout_self_review", "Someone else in finance has to review your own cash-out.")
+
+// RejectPayout returns the diamonds to the user. Only a cash-out still
+// waiting for review can be rejected; the status check happens under the
+// row lock, so a concurrent approval can't also be rejected (which would
+// pay the bank transfer and refund the diamonds).
 func (s *Service) RejectPayout(ctx context.Context, payoutID, reviewer, reason string) (Payout, error) {
-	r, err := s.payoutShard(ctx, payoutID)
-	if err != nil {
-		return Payout{}, err
+	reason = strings.TrimSpace(reason)
+	if reason == "" || len([]rune(reason)) > 300 {
+		return Payout{}, errs.BadRequest("reason_invalid", "Give a reason (up to 300 characters).")
 	}
-	var st string
-	if err := r.Pool.QueryRow(ctx, `SELECT status FROM payouts WHERE id = $1`, payoutID).Scan(&st); err != nil {
-		return Payout{}, err
-	}
-	if st != "pending_review" {
-		return Payout{}, errs.Conflict("payout_not_pending", "Only pending cash-outs can be rejected.")
-	}
-	if _, err := r.Pool.Exec(ctx, `UPDATE payouts SET reviewed_by = $2 WHERE id = $1`, payoutID, reviewer); err != nil {
-		return Payout{}, err
-	}
-	return s.SettlePayout(ctx, payoutID, "rejected", reason)
+	return s.settle(ctx, payoutID, "rejected", reason, reviewer)
 }
 
-// SettlePayout moves a payout to a final state exactly once:
-//   - paid: diamonds leave the platform (clearing → issuance)
-//   - rejected / failed: diamonds go back to the user
+// SettlePayout moves a payout to a final state exactly once (webhooks and
+// the approval path).
 func (s *Service) SettlePayout(ctx context.Context, payoutID, final, reason string) (Payout, error) {
+	return s.settle(ctx, payoutID, final, reason, "")
+}
+
+// settle applies one transition, all under the payout row lock:
+//
+//	processing     -> paid      diamonds leave the platform (clearing -> issuance)
+//	pending_review -> rejected  diamonds back to the user
+//	processing     -> failed    diamonds back to the user
+//	processing|paid -> reversed (stored as failed) diamonds back to the user
+//
+// Repeating a transition that already happened is a no-op.
+func (s *Service) settle(ctx context.Context, payoutID, final, reason, reviewer string) (Payout, error) {
 	r, err := s.payoutShard(ctx, payoutID)
 	if err != nil {
 		return Payout{}, err
@@ -520,42 +561,58 @@ func (s *Service) SettlePayout(ctx context.Context, payoutID, final, reason stri
 		if err != nil {
 			return err
 		}
-		if cur.Status == "paid" || cur.Status == "rejected" || cur.Status == "failed" {
-			p = cur // already settled: idempotent
-			return nil
+		p = cur
+		if reviewer != "" && reviewer == cur.UserID {
+			return ErrSelfReview
 		}
-		if final == "paid" && cur.Status != "processing" {
-			return errs.Conflict("payout_not_processing", "Only a processing cash-out can be marked paid.")
+		var from string // the source of the returned or removed diamonds
+		switch {
+		case final == "reversed" && cur.Status == "paid":
+			from = ledger.PlatformDiamondIssuance
+		case final == "reversed" && cur.Status == "processing":
+			from = ledger.PlatformPayoutClearing
+		case cur.Status == "paid" || cur.Status == "rejected" || cur.Status == "failed":
+			return nil // already settled
+		case final == "paid" && cur.Status == "processing":
+			from = ledger.PlatformPayoutClearing
+		case final == "failed" && cur.Status == "processing":
+			from = ledger.PlatformPayoutClearing
+		case final == "rejected" && cur.Status == "pending_review":
+			from = ledger.PlatformPayoutClearing
+		default:
+			return errs.Conflict("payout_wrong_state", fmt.Sprintf("A %s cash-out can't be marked %s.", strings.ReplaceAll(cur.Status, "_", " "), final))
 		}
 		var legs []ledger.Leg
+		key := "payout_settle:" + payoutID
 		if final == "paid" {
-			legs = []ledger.Leg{
-				{AccountID: ledger.PlatformPayoutClearing, Amount: -cur.Diamonds},
-				{AccountID: ledger.PlatformDiamondIssuance, Amount: cur.Diamonds},
-			}
+			legs = []ledger.Leg{{AccountID: from, Amount: -cur.Diamonds}, {AccountID: ledger.PlatformDiamondIssuance, Amount: cur.Diamonds}}
 		} else {
 			acct, err := ledger.Account(ctx, tx, cur.UserID, ledger.KindDiamonds)
 			if err != nil {
 				return err
 			}
-			legs = []ledger.Leg{
-				{AccountID: ledger.PlatformPayoutClearing, Amount: -cur.Diamonds},
-				{AccountID: acct, Amount: cur.Diamonds, User: true},
+			legs = []ledger.Leg{{AccountID: from, Amount: -cur.Diamonds}, {AccountID: acct, Amount: cur.Diamonds, User: true}}
+			if final == "reversed" {
+				key = "payout_reverse:" + payoutID
 			}
 		}
-		if err := ledger.Post(ctx, tx, events.NewID(), "payout_"+final, "payout_settle:"+payoutID, map[string]any{"payout_id": payoutID}, legs...); err != nil {
+		if err := ledger.Post(ctx, tx, events.NewID(), "payout_"+final, key, map[string]any{"payout_id": payoutID}, legs...); err != nil {
 			if errors.Is(err, ledger.ErrDuplicate) {
 				return nil
 			}
 			return err
 		}
-		p, err = scanPayout(tx.QueryRow(ctx, `UPDATE payouts SET status = $2, note = $3, updated_at = now() WHERE id = $1 RETURNING `+payoutCols,
-			payoutID, final, reason))
+		stored := final
+		if final == "reversed" {
+			stored = "failed"
+		}
+		p, err = scanPayout(tx.QueryRow(ctx, `UPDATE payouts SET status = $2, note = $3, reviewed_by = COALESCE(NULLIF($4, '')::uuid, reviewed_by),
+			updated_at = now() WHERE id = $1 RETURNING `+payoutCols, payoutID, stored, reason, reviewer))
 		if err != nil {
 			return err
 		}
 		return outbox.Insert(ctx, tx, events.TopicWalletEvents, events.MustNew(producer, events.PayoutSettled, cur.UserID,
-			events.PayoutSettledData{PayoutID: payoutID, UserID: cur.UserID, Diamonds: cur.Diamonds, AmountKobo: cur.AmountKobo, Status: final, Reason: reason}))
+			events.PayoutSettledData{PayoutID: payoutID, UserID: cur.UserID, Diamonds: cur.Diamonds, AmountKobo: cur.AmountKobo, Status: stored, Reason: reason}))
 	})
 	return p, err
 }
@@ -568,12 +625,27 @@ func (s *Service) PaystackTransfer(ctx context.Context, event, reference string)
 	switch event {
 	case "transfer.success":
 		_, err := s.SettlePayout(ctx, reference, "paid", "")
-		return ignoreNotFound(err)
-	case "transfer.failed", "transfer.reversed":
+		return ignoreWebhookConflict(ignoreNotFound(err))
+	case "transfer.failed":
 		_, err := s.SettlePayout(ctx, reference, "failed", "The bank transfer didn't go through. Your diamonds were returned.")
-		return ignoreNotFound(err)
+		return ignoreWebhookConflict(ignoreNotFound(err))
+	case "transfer.reversed":
+		_, err := s.SettlePayout(ctx, reference, "reversed", "The bank sent the transfer back. Your diamonds were returned.")
+		return ignoreWebhookConflict(ignoreNotFound(err))
 	}
 	return nil
+}
+
+// ignoreWebhookConflict: a webhook for a transition that can't happen (for
+// example "success" for a payout nobody approved) is logged and dropped,
+// rather than failing and being retried by Paystack forever.
+func ignoreWebhookConflict(err error) error {
+	var e *errs.Error
+	if errors.As(err, &e) && e.Status == http.StatusConflict {
+		slog.Warn("paystack transfer webhook ignored", "err", err)
+		return nil
+	}
+	return err
 }
 
 func ignoreNotFound(err error) error {

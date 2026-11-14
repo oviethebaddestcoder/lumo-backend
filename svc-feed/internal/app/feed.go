@@ -3,20 +3,21 @@
 //
 // The feed owns no database. Its state lives in Redis and is a projection of
 // Kafka topics: media.videos (compacted, so a new cluster can replay it from
-// the start) and social.events (engagement). Lose Redis and you rebuild it
-// by resetting the consumer group offsets.
+// the start), social.events (likes, comments, follows, blocks, reports) and
+// feed.impressions (what people actually watched). Lose Redis and you
+// rebuild it by resetting the consumer group offsets.
 //
-// Ranking v1 is "hot" ranking (engagement with time decay), plus a slice of
-// fresh uploads so new creators get seen, per-user de-duplication and author
-// diversity. Swap rank() for a learned model later; the interface stays.
+// Ranking is a two-stage recommender (recommend.go) over per-viewer
+// interest profiles (signals.go) with a hand-tuned, A/B-testable scoring
+// formula (score.go).
 package app
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
-	"math/rand/v2"
 	"net/http"
 	"sort"
 	"strconv"
@@ -32,22 +33,29 @@ import (
 )
 
 const (
-	hotWindow   = 400
-	freshWindow = 100
-	seenKeep    = 3000
-	authorKeep  = 200
+	seenKeep   = 3000
+	authorKeep = 200
+
+	// Impressions a viewer may report per minute; anything above is dropped.
+	impressionsPerMinute = 300
+	maxWatchMS           = 6 * 3600 * 1000
 )
 
 type Service struct {
 	R        redis.UniversalClient
 	Users    *userdir.Client
 	Producer *kafkax.Producer
+	Arms     Arms
 
 	SocialURL     string // http://svc-social
 	InternalToken string
 	HTTP          *http.Client
-	following     *cache.Cache[[]string]
-	once          sync.Once
+
+	once      sync.Once
+	following *cache.Cache[[]string]
+	metaCache *cache.Cache[meta]
+	statCache *cache.Cache[Stats]
+	anonCache *cache.Cache[[]ranked]
 }
 
 func vKey(id string) string     { return "feed:v:" + id }
@@ -57,34 +65,45 @@ func authorKey(o string) string { return "feed:author:" + o }
 func engKey(id string) string   { return "feed:eng:" + id }
 func seenKey(uid string) string { return "feed:seen:" + uid }
 
-// hotScore: every 10x engagement is worth 12.5 hours of recency.
-func hotScore(likes, comments, created int64) float64 {
-	return math.Log10(math.Max(1, float64(likes+3*comments))) + float64(created)/45000
-}
-
 // ---- projection (consumers) ----
 
 // OnVideo applies media.videos state snapshots.
 func (s *Service) OnVideo(ctx context.Context, e events.Envelope) error {
+	s.init()
 	if e.Type != events.VideoState {
 		return nil
 	}
 	var v events.VideoStateData
-	if err := e.Decode(&v); err != nil {
+	if err := e.Decode(&v); err != nil || len(v.ID) != 36 {
 		return nil
 	}
 	kind := v.Kind
 	if kind == "replay" {
 		kind = "long"
 	}
+	if kind != "short" && kind != "long" {
+		return nil
+	}
+	old, err := s.metas(ctx, []string{v.ID})
+	if err != nil {
+		return err
+	}
+	prev, existed := old[v.ID]
+	s.metaCache.Delete(v.ID)
+
 	if v.Status != "ready" || v.Visibility != "public" {
-		pipe := s.R.TxPipeline()
+		pipe := s.R.Pipeline()
 		for _, k := range []string{"short", "long"} {
 			pipe.ZRem(ctx, hotKey(k), v.ID)
 			pipe.ZRem(ctx, newKey(k), v.ID)
 		}
+		if existed {
+			for _, t := range prev.tags {
+				pipe.ZRem(ctx, tagKey(prev.kind, t), v.ID)
+			}
+		}
 		pipe.ZRem(ctx, authorKey(v.OwnerID), v.ID)
-		pipe.Del(ctx, vKey(v.ID))
+		pipe.Del(ctx, vKey(v.ID), coKey(v.ID))
 		_, err := pipe.Exec(ctx)
 		return err
 	}
@@ -92,43 +111,45 @@ func (s *Service) OnVideo(ctx context.Context, e events.Envelope) error {
 	if v.PublishedAt != nil {
 		created = v.PublishedAt.Unix()
 	}
-	eng, _ := s.R.HMGet(ctx, engKey(v.ID), "likes", "comments").Result()
-	likes, comments := toInt(eng, 0), toInt(eng, 1)
-	pipe := s.R.TxPipeline()
+	tags := normTags(v.Hashtags)
+	st, err := s.stats(ctx, []string{v.ID})
+	if err != nil {
+		return err
+	}
+	h := hotScore(st[v.ID], created)
+	pipe := s.R.Pipeline()
+	if existed {
+		// Drop hashtags the creator edited out.
+		keep := map[string]bool{}
+		for _, t := range tags {
+			keep[t] = true
+		}
+		for _, t := range prev.tags {
+			if !keep[t] || prev.kind != kind {
+				pipe.ZRem(ctx, tagKey(prev.kind, t), v.ID)
+			}
+		}
+	}
 	pipe.HSet(ctx, vKey(v.ID), "owner", v.OwnerID, "kind", kind, "created", created, "hls", v.HLSURL, "thumb", v.ThumbnailURL,
-		"title", v.Title, "desc", v.Description, "dur", v.DurationMS, "w", v.Width, "h", v.Height)
-	pipe.ZAdd(ctx, hotKey(kind), redis.Z{Score: hotScore(likes, comments, created), Member: v.ID})
+		"title", v.Title, "desc", v.Description, "dur", v.DurationMS, "w", v.Width, "h", v.Height, "tags", strings.Join(tags, ","))
+	pipe.ZAdd(ctx, hotKey(kind), redis.Z{Score: h, Member: v.ID})
 	pipe.ZAdd(ctx, newKey(kind), redis.Z{Score: float64(created), Member: v.ID})
+	for _, t := range tags {
+		pipe.ZAdd(ctx, tagKey(kind, t), redis.Z{Score: h, Member: v.ID})
+	}
 	pipe.ZAdd(ctx, authorKey(v.OwnerID), redis.Z{Score: float64(created), Member: v.ID})
 	pipe.ZRemRangeByRank(ctx, authorKey(v.OwnerID), 0, -authorKeep-1)
-	_, err := pipe.Exec(ctx)
+	_, err = pipe.Exec(ctx)
 	return err
 }
 
-// OnSocial updates engagement and re-ranks (consumer of social.events).
+// OnSocial updates engagement counters, trending, and viewer interest
+// (consumer of social.events).
 func (s *Service) OnSocial(ctx context.Context, e events.Envelope) error {
-	var field string
-	var delta int64 = 1
-	var videoID string
+	s.init()
 	switch e.Type {
-	case events.Liked, events.Unliked:
-		var l events.LikeData
-		if e.Decode(&l) != nil {
-			return nil
-		}
-		videoID, field = l.VideoID, "likes"
-		if e.Type == events.Unliked {
-			delta = -1
-		}
-	case events.Commented, events.CommentDeleted:
-		var c events.CommentData
-		if e.Decode(&c) != nil {
-			return nil
-		}
-		videoID, field = c.VideoID, "comments"
-		if e.Type == events.CommentDeleted {
-			delta = -1
-		}
+	case events.Liked, events.Unliked, events.Commented, events.CommentDeleted,
+		events.Followed, events.Unfollowed, events.Blocked, events.Unblocked, events.Reported:
 	default:
 		return nil
 	}
@@ -136,20 +157,38 @@ func (s *Service) OnSocial(ctx context.Context, e events.Envelope) error {
 	if ok, err := s.R.SetNX(ctx, "feed:dedupe:"+e.ID, 1, 24*time.Hour).Result(); err != nil || !ok {
 		return err
 	}
-	pipe := s.R.TxPipeline()
-	pipe.HIncrBy(ctx, engKey(videoID), field, delta)
-	pipe.Expire(ctx, engKey(videoID), 30*24*time.Hour)
-	pipe.HMGet(ctx, vKey(videoID), "kind", "created")
-	cmds, err := pipe.Exec(ctx)
-	if err != nil {
-		return err
+	var field, videoID string
+	var delta int64 = 1
+	switch e.Type {
+	case events.Liked, events.Unliked:
+		var l events.LikeData
+		if e.Decode(&l) == nil {
+			videoID, field = l.VideoID, "likes"
+		}
+		if e.Type == events.Unliked {
+			delta = -1
+		}
+	case events.Commented, events.CommentDeleted:
+		var c events.CommentData
+		if e.Decode(&c) == nil {
+			videoID, field = c.VideoID, "comments"
+		}
+		if e.Type == events.CommentDeleted {
+			delta = -1
+		}
 	}
-	meta := cmds[2].(*redis.SliceCmd).Val()
-	if meta[0] == nil {
-		return nil // not in the feed (private, removed, or not ready)
+	if videoID != "" {
+		pipe := s.R.Pipeline()
+		pipe.HIncrBy(ctx, engKey(videoID), field, delta)
+		pipe.Expire(ctx, engKey(videoID), 30*24*time.Hour)
+		if _, err := pipe.Exec(ctx); err != nil {
+			return err
+		}
+		if err := s.rehot(ctx, []string{videoID}); err != nil {
+			return err
+		}
 	}
-	eng, _ := s.R.HMGet(ctx, engKey(videoID), "likes", "comments").Result()
-	return s.R.ZAddXX(ctx, hotKey(fmt.Sprint(meta[0])), redis.Z{Score: hotScore(toInt(eng, 0), toInt(eng, 1), toInt(meta, 1)), Member: videoID}).Err()
+	return s.socialSignal(ctx, e)
 }
 
 // ---- reads ----
@@ -168,105 +207,10 @@ type Item struct {
 	Likes        int64             `json:"likes"`
 	Comments     int64             `json:"comments"`
 	CreatedAt    int64             `json:"created_at"`
-}
-
-// ForYou returns the next page for a viewer (anonymous viewers get the
-// global ranking without de-duplication).
-func (s *Service) ForYou(ctx context.Context, userID, kind string, limit int) ([]Item, error) {
-	if kind != "long" {
-		kind = "short"
-	}
-	if limit <= 0 || limit > 20 {
-		limit = 10
-	}
-	hot, err := s.R.ZRevRange(ctx, hotKey(kind), 0, hotWindow-1).Result()
-	if err != nil {
-		return nil, err
-	}
-	fresh, err := s.R.ZRevRange(ctx, newKey(kind), 0, freshWindow-1).Result()
-	if err != nil {
-		return nil, err
-	}
-	cands := rank(hot, fresh)
-	if userID != "" {
-		cands, err = s.unseen(ctx, userID, cands)
-		if err != nil {
-			return nil, err
-		}
-	}
-	items, err := s.hydrate(ctx, cands, limit*3)
-	if err != nil {
-		return nil, err
-	}
-	// Author diversity: at most 2 videos per creator per page.
-	perAuthor := map[string]int{}
-	out := make([]Item, 0, limit)
-	for _, it := range items {
-		if perAuthor[it.Author.ID] >= 2 {
-			continue
-		}
-		perAuthor[it.Author.ID]++
-		out = append(out, it)
-		if len(out) == limit {
-			break
-		}
-	}
-	if userID != "" && len(out) > 0 {
-		s.markSeen(ctx, userID, out)
-	}
-	return out, nil
-}
-
-// rank blends hot and fresh: hot items keep their order with jitter (so two
-// refreshes differ), and one in four slots goes to a fresh upload.
-func rank(hot, fresh []string) []string {
-	type c struct {
-		id    string
-		score float64
-	}
-	seen := map[string]bool{}
-	var hs []c
-	for i, id := range hot {
-		seen[id] = true
-		hs = append(hs, c{id, float64(i) + rand.Float64()*15})
-	}
-	sort.Slice(hs, func(i, j int) bool { return hs[i].score < hs[j].score })
-	var fs []string
-	for _, id := range fresh {
-		if !seen[id] {
-			fs = append(fs, id)
-		}
-	}
-	rand.Shuffle(len(fs), func(i, j int) { fs[i], fs[j] = fs[j], fs[i] })
-	out := make([]string, 0, len(hs)+len(fs))
-	hi, fi := 0, 0
-	for hi < len(hs) || fi < len(fs) {
-		if (len(out)%4 == 3 && fi < len(fs)) || hi >= len(hs) {
-			out = append(out, fs[fi])
-			fi++
-		} else {
-			out = append(out, hs[hi].id)
-			hi++
-		}
-	}
-	return out
-}
-
-func (s *Service) unseen(ctx context.Context, userID string, ids []string) ([]string, error) {
-	if len(ids) == 0 {
-		return ids, nil
-	}
-	scores, err := s.R.ZMScore(ctx, seenKey(userID), ids...).Result()
-	if err != nil {
-		return nil, err
-	}
-	out := ids[:0:0]
-	for i, id := range ids {
-		if scores[i] == 0 {
-			out = append(out, id)
-		}
-	}
-	return out, nil
+	// Why it was picked (co | follow | author | tag | hot | fresh) and the
+	// ranking A/B arm. Clients send both back on the impression.
+	Source string `json:"rec_source,omitempty"`
+	Arm    string `json:"rec_arm,omitempty"`
 }
 
 func (s *Service) markSeen(ctx context.Context, userID string, items []Item) {
@@ -304,11 +248,11 @@ func (s *Service) hydrate(ctx context.Context, ids []string, max int) ([]Item, e
 	for i, id := range ids {
 		m := vs[i].Val()
 		if len(m) == 0 {
-			continue
+			continue // removed since it was ranked
 		}
 		e := es[i].Val()
 		it := Item{ID: id, Kind: m["kind"], HLSURL: m["hls"], ThumbnailURL: m["thumb"], Title: m["title"], Description: m["desc"],
-			Likes: toInt(e, 0), Comments: toInt(e, 1)}
+			Likes: max64(0, toInt(e, 0)), Comments: max64(0, toInt(e, 1))}
 		it.DurationMS, _ = strconv.ParseInt(m["dur"], 10, 64)
 		it.Width, _ = strconv.ParseInt(m["w"], 10, 64)
 		it.Height, _ = strconv.ParseInt(m["h"], 10, 64)
@@ -318,17 +262,30 @@ func (s *Service) hydrate(ctx context.Context, ids []string, max int) ([]Item, e
 		items = append(items, it)
 	}
 	users, _ := s.Users.Many(ctx, owners)
-	for i := range items {
-		if u, ok := users[items[i].Author.ID]; ok {
-			items[i].Author = u
+	out := items[:0]
+	for _, it := range items {
+		if u, ok := users[it.Author.ID]; ok {
+			if u.Status != "" && u.Status != "active" {
+				continue // suspended or deleted creator
+			}
+			it.Author = u
 		}
+		out = append(out, it)
 	}
-	return items, nil
+	return out, nil
+}
+
+func max64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // Following returns recent videos from accounts the viewer follows
 // (fan-out on read: no per-follower inbox to write for big creators).
 func (s *Service) Following(ctx context.Context, userID string, before int64, limit int) ([]Item, int64, error) {
+	s.init()
 	if limit <= 0 || limit > 20 {
 		limit = 10
 	}
@@ -338,6 +295,9 @@ func (s *Service) Following(ctx context.Context, userID string, before int64, li
 	ids, err := s.followingIDs(ctx, userID)
 	if err != nil {
 		return nil, 0, err
+	}
+	if len(ids) > 2000 {
+		ids = ids[:2000] // bound the fan-out
 	}
 	pipe := s.R.Pipeline()
 	cmds := make([]*redis.ZSliceCmd, len(ids))
@@ -368,9 +328,12 @@ func (s *Service) Following(ctx context.Context, userID string, before int64, li
 }
 
 func (s *Service) followingIDs(ctx context.Context, userID string) ([]string, error) {
-	s.once.Do(func() { s.following = cache.New[[]string](2*time.Minute, 200_000) })
+	s.init()
 	if ids, ok := s.following.Get(userID); ok {
 		return ids, nil
+	}
+	if s.SocialURL == "" {
+		return nil, nil
 	}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, s.SocialURL+"/internal/social/users/"+userID+"/following-ids", nil)
 	req.Header.Set("X-Internal-Token", s.InternalToken)
@@ -379,19 +342,32 @@ func (s *Service) followingIDs(ctx context.Context, userID string) ([]string, er
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("social following: status %d", resp.StatusCode)
+	}
 	var body struct {
 		IDs []string `json:"ids"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil || resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("social following: status %d: %v", resp.StatusCode, err)
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&body); err != nil {
+		return nil, fmt.Errorf("social following: %w", err)
 	}
 	s.following.Set(userID, body.IDs)
 	return body.IDs, nil
 }
 
-// Impressions records what the viewer actually watched (dedupe + analytics).
+// Impressions records what the viewer watched: marks it seen and hands it
+// to the signal pipeline (feed.impressions, keyed by viewer so one
+// viewer's signals stay in order). Over-limit reports are dropped quietly.
 func (s *Service) Impressions(ctx context.Context, userID string, items []events.ImpressionData) {
 	if len(items) == 0 || len(items) > 50 {
+		return
+	}
+	rl := fmt.Sprintf("feed:rl:imp:%s:%d", userID, time.Now().Unix()/60)
+	n, err := s.R.IncrBy(ctx, rl, int64(len(items))).Result()
+	if err == nil && n == int64(len(items)) {
+		s.R.Expire(ctx, rl, 2*time.Minute)
+	}
+	if err == nil && n > impressionsPerMinute {
 		return
 	}
 	now := time.Now().UTC()
@@ -399,6 +375,12 @@ func (s *Service) Impressions(ctx context.Context, userID string, items []events
 	for _, it := range items {
 		if len(it.VideoID) != 36 {
 			continue
+		}
+		it.WatchMS = min(max(it.WatchMS, 0), maxWatchMS)
+		it.Loops = min(max(it.Loops, 0), 50)
+		it.Source, it.Arm = label(it.Source), label(it.Arm)
+		if len(it.Surface) > 16 {
+			it.Surface = it.Surface[:16]
 		}
 		zs = append(zs, redis.Z{Score: float64(now.Unix()), Member: it.VideoID})
 		if s.Producer != nil {
@@ -411,7 +393,7 @@ func (s *Service) Impressions(ctx context.Context, userID string, items []events
 	}
 }
 
-// Trim keeps the ranking sets bounded (worker cron).
+// Trim keeps the global ranking sets bounded (worker cron).
 func (s *Service) Trim(ctx context.Context) {
 	for _, k := range []string{"short", "long"} {
 		s.R.ZRemRangeByRank(ctx, hotKey(k), 0, -200_001)

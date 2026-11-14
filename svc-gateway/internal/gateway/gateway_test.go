@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"testing"
 	"time"
@@ -88,5 +89,30 @@ func TestGateway(t *testing.T) {
 	// Unknown prefix is 404.
 	if resp := do("/nope", "", "41.58.1.9"); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("no route: %d", resp.StatusCode)
+	}
+}
+
+func TestCanonicalPath(t *testing.T) {
+	ok := []string{"/v1/feed/foryou", "/v1/media/hashtags/jollof/videos", "/v1/users/", "/v1/media/hashtags/na%C3%AFja/videos"}
+	bad := []string{
+		"/v1/media/../../internal/x", "/v1/media/%2e%2e/%2e%2e/internal/x", "/v1/x%2f..%2f..%2finternal",
+		"/v1//feed", "/v1/./feed", "/v1/feed%5c..%5cinternal", "/v1/a%00b",
+	}
+	for _, p := range ok {
+		r := httptest.NewRequest(http.MethodGet, "http://gw"+p, nil)
+		if !canonicalPath(r) {
+			t.Errorf("rejected %s", p)
+		}
+	}
+	for _, p := range bad {
+		r := httptest.NewRequest(http.MethodGet, "http://gw/", nil)
+		u, err := url.Parse("http://gw" + p) // keeps dot segments, like a raw request line
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.URL = u
+		if canonicalPath(r) {
+			t.Errorf("accepted %s (path %q)", p, u.Path)
+		}
 	}
 }

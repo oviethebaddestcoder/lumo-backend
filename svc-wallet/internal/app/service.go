@@ -616,12 +616,17 @@ func (s *Service) RequestPayout(ctx context.Context, userID, requestID string, d
 		var recipient, label *string
 		if s.Paystack != nil {
 			var rc, l string
-			err := tx.QueryRow(ctx, `SELECT recipient_code, bank_name || ' ••' || account_last4 FROM payout_accounts WHERE user_id = $1`, userID).Scan(&rc, &l)
+			var changed *time.Time
+			err := tx.QueryRow(ctx, `SELECT recipient_code, bank_name || ' ••' || account_last4, changed_at
+				FROM payout_accounts WHERE user_id = $1`, userID).Scan(&rc, &l, &changed)
 			if db.IsNoRows(err) {
 				return ErrNoPayoutAccount
 			}
 			if err != nil {
 				return err
+			}
+			if changed != nil && time.Since(*changed) < PayoutAccountCooldown {
+				return ErrPayoutCooldown
 			}
 			recipient, label = &rc, &l
 		}

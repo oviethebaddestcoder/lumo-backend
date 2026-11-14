@@ -8,7 +8,7 @@ nothing here imports another service. See `lumo-infra` for the whole picture.
 
 ## What it does
 
-Video bytes never pass through Go. The app gets presigned multipart URLs (16 MiB parts, resumable), uploads straight to S3/R2, then calls complete. That queues a transcode job; worker-transcoder reports back; the video becomes `ready` and its full state goes out on the compacted `media.videos` topic. Feed, social and others read that instead of calling this service. Abandoned uploads are aborted after 24h. Live replays are imported once per room.
+Video bytes never pass through Go. The app gets presigned multipart URLs (16 MiB parts, resumable), uploads straight to S3/R2, then calls complete. That queues a transcode job; worker-transcoder reports back; the video becomes `ready` and its full state goes out on the compacted `media.videos` topic. Feed, social and others read that instead of calling this service. Abandoned uploads are aborted after 24h. Live replays are imported once per room. Image uploads (avatars, thumbnails) get a presigned PUT with `Content-Length` and `Content-Type` signed in, so S3 itself refuses a file bigger than the approved size (max 5 MB) or of another type. The bucket CORS must allow the `Content-Type` header.
 
 ## API
 

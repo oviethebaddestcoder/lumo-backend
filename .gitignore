@@ -8,3 +8,4 @@ coverage.out
 .secrets.env
 .idea/
 .vscode/
+dump.rdb

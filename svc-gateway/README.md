@@ -12,7 +12,7 @@ Routes `/v1/<service>/...` to the owning service by longest prefix and passes We
 - resolves the real client IP (walks `X-Forwarded-For` past trusted proxies, so it can't be spoofed),
 - verifies the access token if present and checks the session/ban denylist in Redis (instant logout),
 - rate limits per user (signed in) or per IP (anonymous), stricter on `/v1/auth`,
-- enforces CORS for the web app, body size limits and security headers.
+- enforces CORS for the web app, body size limits and security headers, and rejects non-canonical paths (dot segments, doubled slashes, encoded `/` or `\`) so a path can't match one route here and mean another inside a service.
 
 Services verify tokens again themselves; the gateway's job is to stop bad traffic early. It never routes `/internal/...`.
 
