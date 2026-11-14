@@ -9,6 +9,44 @@ kind: PrometheusRule
 metadata: { name: lumo-alerts, namespace: lumo }
 spec:
   groups:
+    # SLOs with multi-window burn-rate alerts (Google SRE workbook): page when
+    # the monthly error budget is burning 14.4x too fast (2% of the budget in
+    # 1h), open a ticket at 6x (5% in 6h). Recording rules keep them cheap.
+    - name: lumo-slo
+      rules:
+        - record: slo:gateway_errors:ratio_rate5m
+          expr: sum(rate(http_requests_total{service="svc-gateway", status=~"5.."}[5m])) / sum(rate(http_requests_total{service="svc-gateway"}[5m]))
+        - record: slo:gateway_errors:ratio_rate30m
+          expr: sum(rate(http_requests_total{service="svc-gateway", status=~"5.."}[30m])) / sum(rate(http_requests_total{service="svc-gateway"}[30m]))
+        - record: slo:gateway_errors:ratio_rate1h
+          expr: sum(rate(http_requests_total{service="svc-gateway", status=~"5.."}[1h])) / sum(rate(http_requests_total{service="svc-gateway"}[1h]))
+        - record: slo:gateway_errors:ratio_rate6h
+          expr: sum(rate(http_requests_total{service="svc-gateway", status=~"5.."}[6h])) / sum(rate(http_requests_total{service="svc-gateway"}[6h]))
+        - record: slo:gifts_errors:ratio_rate5m
+          expr: sum(rate(http_requests_total{service="svc-wallet", route=~".*gifts/send.*", status=~"5.."}[5m])) / sum(rate(http_requests_total{service="svc-wallet", route=~".*gifts/send.*"}[5m]))
+        - record: slo:gifts_errors:ratio_rate1h
+          expr: sum(rate(http_requests_total{service="svc-wallet", route=~".*gifts/send.*", status=~"5.."}[1h])) / sum(rate(http_requests_total{service="svc-wallet", route=~".*gifts/send.*"}[1h]))
+        - alert: AvailabilitySLOFastBurn
+          # SLO: 99.9% of API requests succeed (budget 0.1%).
+          expr: slo:gateway_errors:ratio_rate1h > 14.4 * 0.001 and slo:gateway_errors:ratio_rate5m > 14.4 * 0.001
+          labels: { severity: page }
+          annotations:
+            summary: "API error budget burning 14x too fast ({{ $value | humanizePercentage }} errors over 1h)"
+            runbook: lumo-infra/docs/runbook.md#availabilityslofastburn
+        - alert: AvailabilitySLOSlowBurn
+          expr: slo:gateway_errors:ratio_rate6h > 6 * 0.001 and slo:gateway_errors:ratio_rate30m > 6 * 0.001
+          labels: { severity: ticket }
+          annotations:
+            summary: "API error budget burning 6x too fast over 6h"
+            runbook: lumo-infra/docs/runbook.md#availabilitysloslowburn
+        - alert: GiftSLOFastBurn
+          # SLO: 99.95% of gift sends succeed. Gifts are revenue.
+          expr: slo:gifts_errors:ratio_rate1h > 14.4 * 0.0005 and slo:gifts_errors:ratio_rate5m > 14.4 * 0.0005
+          labels: { severity: page }
+          annotations:
+            summary: "Gift sends failing: error budget burning 14x too fast"
+            runbook: lumo-infra/docs/runbook.md#giftslofastburn
+
     - name: lumo-availability
       rules:
         - alert: High5xx
@@ -74,12 +112,12 @@ spec:
         - alert: ConsumerLagGrowing
           # Money and messaging consumers must stay near real time.
           expr: |
-            sum by (group) (kafka_consumergroup_lag{group=~"wallet-.*|messaging-.*|notifier-.*|feed-signals|social-.*"}) > 10000
-            and deriv(sum by (group) (kafka_consumergroup_lag{group=~"wallet-.*|messaging-.*|notifier-.*|feed-signals|social-.*"})[10m:1m]) > 0
+            sum by (consumergroup) (kafka_consumergroup_lag{consumergroup=~"wallet-.*|messaging-.*|notifier-.*|feed-signals|social-.*"}) > 10000
+            and deriv(sum by (consumergroup) (kafka_consumergroup_lag{consumergroup=~"wallet-.*|messaging-.*|notifier-.*|feed-signals|social-.*"})[10m:1m]) > 0
           for: 10m
           labels: { severity: page }
           annotations:
-            summary: "{{ $labels.group }} is {{ $value }} events behind and falling further behind"
+            summary: "{{ $labels.consumergroup }} is {{ $value }} events behind and falling further behind"
             runbook: lumo-infra/docs/runbook.md#consumerlaggrowing
 
     - name: lumo-money

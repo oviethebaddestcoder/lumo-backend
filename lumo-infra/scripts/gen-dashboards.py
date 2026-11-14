@@ -19,7 +19,7 @@ ROWS = [
         ("Outbox oldest unpublished event", 'max by (relay) (outbox_oldest_age_seconds)', "s"),
         ("Events consumed by group and result", 'sum by (group, result) (rate(kafka_events_consumed_total[5m]))', "ops"),
         ("Dead-lettered events", 'sum by (group, topic) (increase(kafka_events_dlq_total[1h]))', "short"),
-        ("Consumer lag", 'sum by (group) (kafka_consumergroup_lag)', "short"),
+        ("Consumer lag", 'sum by (consumergroup) (kafka_consumergroup_lag)', "short"),
         ("Handler p95 by group", 'histogram_quantile(0.95, sum by (le, group) (rate(kafka_event_handle_seconds_bucket[5m])))', "s"),
     ]),
     ("Money", [

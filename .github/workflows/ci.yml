@@ -97,6 +97,49 @@ jobs:
         uses: actions/upload-artifact@v4
         with: { name: e2e-logs, path: /tmp/lumo-e2e/logs }
 
+  # Visual preview / UI smoke test: every backend service plus the web app
+  # and the mobile app (rendered with react-native-web), demo data, and a
+  # screenshot of every screen. Fails on any page error or CSP violation;
+  # screenshots are attached to the run. Needs read access to lumo-web and
+  # lumo-mobile: if they're private, add a fine-grained token with
+  # "Contents: read" on both as the LUMO_REPOS_TOKEN secret.
+  preview:
+    needs: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_PASSWORD: postgres }
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U postgres" --health-interval 5s --health-retries 10
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+    env:
+      PG_URL: postgres://postgres:postgres@localhost:5432
+      E2E_REDIS_URL: redis://localhost:6379/5
+      GOFLAGS: -mod=mod
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: lumo-backend }
+      - uses: actions/checkout@v4
+        with: { repository: oviethebaddestcoder/lumo-web, path: lumo-web, token: "${{ secrets.LUMO_REPOS_TOKEN || github.token }}" }
+      - uses: actions/checkout@v4
+        with: { repository: oviethebaddestcoder/lumo-mobile, path: lumo-mobile, token: "${{ secrets.LUMO_REPOS_TOKEN || github.token }}" }
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.26", cache: false }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg postgresql-client redis-tools
+      - working-directory: lumo-backend/lumo-infra/preview
+        run: npm install --no-save playwright@1.63.0 && npx playwright install --with-deps chromium
+      - run: lumo-backend/lumo-infra/preview/run.sh
+        env: { WEB_DIR: lumo-web, MOBILE_DIR: lumo-mobile, OUT: "${{ github.workspace }}/preview-shots" }
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with: { name: preview-screenshots, path: preview-shots }
+
   # Recommender quality: simulated viewers through the real feed code.
   # Fails if personalization stops clearly beating random and
   # popularity-only ranking, starves new creators, or the interest picker

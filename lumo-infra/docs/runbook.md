@@ -6,6 +6,24 @@ The dashboard `Lumo overview` (`lumo-infra/k8s/dashboards.yaml`) has a panel for
 
 ---
 
+## SLOs
+
+| SLO | Target | Budget per 30 days |
+|---|---|---|
+| API requests succeed (gateway, non-5xx) | 99.9% | about 43 minutes of full outage |
+| Gift sends succeed | 99.95% | about 22 minutes |
+
+Burn-rate alerts page when the budget would run out in about two days (14.4×), and open a ticket at 6×. When a month's budget is spent, freeze risky deploys until it recovers.
+
+### AvailabilitySLOFastBurn
+Errors are eating the monthly API budget 14× too fast. This alert is the "users are noticing" signal and fires before High5xx on low-traffic routes. Check *Errors by route* on the dashboard and follow High5xx. Roll back the most recent deploy if it lines up.
+
+### AvailabilitySLOSlowBurn
+A slow, steady error rate (6×) that will spend the budget within days. It's usually one flaky route or dependency. Find it with *5xx rate by route* and fix it in working hours.
+
+### GiftSLOFastBurn
+Gift sends are failing: revenue is being lost, and so is creator trust. Follow GiftsStopped. Check the wallet logs for the error, the shard databases, and `wallet_reconcile_problems`.
+
 ## Availability
 
 ### High5xx

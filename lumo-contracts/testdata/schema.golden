@@ -1,0 +1,232 @@
+events.BlockData
+	blocked_id string
+	blocker_id string
+events.ChatMessageData
+	id string
+	room_id string
+	sent_at time.Time
+	text string
+	user_id string
+events.CoinsPurchasedData
+	channel string
+	coins int64
+	product_id string
+	purchase_id string
+	store_ref string
+	user_id string
+events.CoinsReversedData
+	coins int64
+	purchase_id string
+	reason string
+	user_id string
+events.CommentData
+	comment_id string
+	owner_id string
+	parent_id string
+	text string
+	user_id string
+	video_id string
+events.DMSentData
+	conversation_id string
+	message_id string
+	preview string
+	recipient_id string
+	sender_id string
+	sent_at time.Time
+events.DiamondsCreditedData
+	count int
+	diamonds int64
+	receiver_id string
+events.Envelope
+	data json.RawMessage
+	event_id string
+	key string
+	occurred_at time.Time
+	producer string
+	trace_id string
+	type string
+	version int
+events.FollowData
+	followee_id string
+	follower_id string
+events.GiftSentData
+	coins int64
+	diamonds int64
+	from_backpack bool
+	gift_id string
+	gift_send_id string
+	qty int
+	receiver_id string
+	room_id string
+	sender_id string
+	sent_at time.Time
+	video_id string
+events.ImpressionData
+	arm string
+	at time.Time
+	loops int
+	shared bool
+	skipped bool
+	source string
+	surface string
+	user_id string
+	video_id string
+	watch_ms int64
+events.LikeData
+	owner_id string
+	user_id string
+	video_id string
+events.ModerationActionData
+	action string
+	action_id string
+	actor_id string
+	reason string
+	room_id string
+	target_id string
+	target_type string
+	until *time.Time
+events.PKEndedData
+	pk_id string
+	room_a string
+	room_b string
+	score_a int64
+	score_b int64
+	winner_room string
+events.PKStartedData
+	ends_at time.Time
+	host_a string
+	host_b string
+	pk_id string
+	room_a string
+	room_b string
+events.PayoutAccountChangedData
+	account_last4 string
+	bank_name string
+	first_time bool
+	user_id string
+events.PayoutRequestedData
+	diamonds int64
+	payout_id string
+	user_id string
+events.PayoutSettledData
+	amount_kobo int64
+	diamonds int64
+	payout_id string
+	reason string
+	status string
+	user_id string
+events.ReplayReadyData
+	host_id string
+	object_key string
+	room_id string
+	title string
+events.ReportData
+	details string
+	reason string
+	report_id string
+	reporter_id string
+	target_id string
+	target_type string
+events.RoomEndedData
+	ended_at time.Time
+	gift_coins int64
+	host_id string
+	peak_viewers int64
+	reason string
+	room_id string
+events.RoomStartedData
+	category string
+	host_id string
+	room_id string
+	started_at time.Time
+	title string
+events.TranscodeJobData
+	job_id string
+	kind string
+	output_prefix string
+	source_key string
+	video_id string
+events.TranscodeResultData
+	duration_ms int64
+	error string
+	height int
+	job_id string
+	master_key string
+	ok bool
+	thumb_key string
+	video_id string
+	width int
+events.UserDeletedData
+	user_id string
+events.UserPublic
+	adult bool
+	avatar_url string
+	bio string
+	created_at time.Time
+	display_name string
+	handle string
+	id string
+	status string
+	verified bool
+events.UserRegisteredData
+	method string
+	user UserPublic
+events.UserUpdatedData
+	user UserPublic
+events.VideoStateData
+	created_at time.Time
+	description string
+	duration_ms int64
+	hashtags []string
+	height int
+	hls_url string
+	id string
+	kind string
+	owner_id string
+	published_at *time.Time
+	status string
+	thumbnail_url string
+	title string
+	visibility string
+	width int
+realtime.Chat
+	display_name string
+	handle string
+	id string
+	text string
+	user_id string
+realtime.DM
+	client_id string
+	conversation_id string
+	created_at time.Time
+	id string
+	sender_id string
+	text string
+realtime.DMRead
+	conversation_id string
+	read_at time.Time
+	user_id string
+realtime.Gift
+	coins int64
+	gift_id string
+	qty int
+	receiver_id string
+	sender_id string
+realtime.Goal
+	coins int64
+	target int64
+realtime.Message
+	at time.Time
+	data any
+	room_id string
+	target string
+	type string
+realtime.PKScore
+	ends_at_unix int64
+	pk_id string
+	room_a string
+	room_b string
+	score_a int64
+	score_b int64
+realtime.Viewers
+	count int64

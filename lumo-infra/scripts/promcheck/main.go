@@ -32,7 +32,7 @@ func main() {
 			Spec struct {
 				Groups []struct {
 					Rules []struct {
-						Alert, Expr string
+						Alert, Record, Expr string
 						Labels      map[string]string
 						Annotations map[string]string
 					}
@@ -48,7 +48,10 @@ func main() {
 			for _, r := range g.Rules {
 				n++
 				if _, err := p.ParseExpr(r.Expr); err != nil {
-					report("%s: %v", r.Alert, err)
+					report("%s%s: %v", r.Alert, r.Record, err)
+				}
+				if r.Record != "" {
+					continue // recording rule: no severity or runbook
 				}
 				anchor := strings.ToLower(r.Alert)
 				if r.Labels["severity"] != "page" && r.Labels["severity"] != "ticket" {
