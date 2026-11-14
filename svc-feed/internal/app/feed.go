@@ -55,6 +55,7 @@ type Service struct {
 	metaCache *cache.Cache[meta]
 	statCache *cache.Cache[Stats]
 	anonCache *cache.Cache[[]ranked]
+	specCache *cache.Cache[map[string]float64] // kind -> tag specificity (<1 only)
 	// Global candidate lists (trending, fresh, per-hashtag) are the same
 	// for every viewer, so each pod reads them from Redis at most every few
 	// seconds instead of on every ranking.
@@ -67,6 +68,10 @@ func newKey(kind string) string { return "feed:new:" + kind }
 func authorKey(o string) string { return "feed:author:" + o }
 func engKey(id string) string   { return "feed:eng:" + id }
 func seenKey(uid string) string { return "feed:seen:" + uid }
+
+// Tag document frequency per feed kind: how many live videos carry each tag.
+func tagDFKey(kind string) string  { return "feed:tagdf:" + kind }
+func vCountKey(kind string) string { return "feed:vcount:" + kind }
 
 // ---- projection (consumers) ----
 
@@ -107,6 +112,9 @@ func (s *Service) OnVideo(ctx context.Context, e events.Envelope) error {
 		}
 		pipe.ZRem(ctx, authorKey(v.OwnerID), v.ID)
 		pipe.Del(ctx, vKey(v.ID), coKey(v.ID))
+		if existed {
+			countTags(ctx, pipe, prev.kind, prev.tags, -1)
+		}
 		_, err := pipe.Exec(ctx)
 		return err
 	}
@@ -121,6 +129,10 @@ func (s *Service) OnVideo(ctx context.Context, e events.Envelope) error {
 	}
 	h := hotScore(st[v.ID], created)
 	pipe := s.R.Pipeline()
+	if existed {
+		countTags(ctx, pipe, prev.kind, prev.tags, -1)
+	}
+	countTags(ctx, pipe, kind, tags, 1)
 	if existed {
 		// Drop hashtags the creator edited out.
 		keep := map[string]bool{}
@@ -144,6 +156,14 @@ func (s *Service) OnVideo(ctx context.Context, e events.Envelope) error {
 	pipe.ZRemRangeByRank(ctx, authorKey(v.OwnerID), 0, -authorKeep-1)
 	_, err = pipe.Exec(ctx)
 	return err
+}
+
+// countTags adds (+1) or removes (-1) one video from the tag counts.
+func countTags(ctx context.Context, pipe redis.Pipeliner, kind string, tags []string, d int64) {
+	pipe.IncrBy(ctx, vCountKey(kind), d)
+	for _, t := range tags {
+		pipe.ZIncrBy(ctx, tagDFKey(kind), float64(d), t)
+	}
 }
 
 // OnSocial updates engagement counters, trending, and viewer interest

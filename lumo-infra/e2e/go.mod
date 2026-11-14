@@ -3,6 +3,7 @@ module github.com/oviethebaddestcoder/lumo-backend/lumo-infra/e2e
 go 1.26.0
 
 require (
+	github.com/coder/websocket v1.8.14
 	github.com/oviethebaddestcoder/lumo-backend/lumo-contracts v0.0.0
 	github.com/twmb/franz-go v1.22.3
 	github.com/twmb/franz-go/pkg/kfake v0.0.0-20261109062748-d6ea02a174bc

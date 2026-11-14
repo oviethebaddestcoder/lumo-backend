@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"math"
 	"testing"
 )
 
@@ -68,7 +69,7 @@ func TestHotScoreOrdersByEngagementAndAge(t *testing.T) {
 
 func TestAffinity(t *testing.T) {
 	c := &cand{owner: "o", tags: []string{"cooking", "jollof", "football"}}
-	c.setAffinity(map[string]float64{"cooking": 8, "football": -2}, map[string]float64{"o": 4})
+	c.setAffinity(map[string]float64{"cooking": 8, "football": -2}, map[string]float64{"o": 4}, nil, 0)
 	if c.tagAff <= 0.4 || c.tagAff >= aff(8) {
 		t.Fatalf("tagAff %.3f should be strong but pulled down by a disliked tag", c.tagAff)
 	}
@@ -209,5 +210,16 @@ func TestSampleFavoursTop(t *testing.T) {
 	}
 	if top < 1000 { // uniform would be 33%; we want at least half from the top third
 		t.Fatalf("only %d/2000 picks from the top third", top)
+	}
+}
+
+func TestSpecificityIgnoresGenericTags(t *testing.T) {
+	if specificity(0.1) != 1 || specificity(0.7) != 0 || math.Abs(specificity(0.375)-0.5) > 1e-9 {
+		t.Fatal("specificity curve")
+	}
+	c := &cand{owner: "o", tags: []string{"naija", "cooking"}}
+	c.setAffinity(map[string]float64{"naija": 9}, nil, map[string]float64{"naija": 0}, 4)
+	if c.tagAff != 0 {
+		t.Fatalf("a tag on every video must not count as interest: %.3f", c.tagAff)
 	}
 }

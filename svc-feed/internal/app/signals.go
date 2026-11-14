@@ -350,7 +350,9 @@ func (s *Service) OnImpressions(ctx context.Context, envs []events.Envelope) err
 		if d.Shared {
 			kind = "share"
 		}
-		sigs = append(sigs, signal{uid: d.UserID, vid: d.VideoID, m: m, w: w, positive: w >= 1, strong: d.Shared, kind: kind})
+		// Finishing or sharing a video re-ranks the next page, so the feed
+		// follows the viewer within a session (TikTok-like responsiveness).
+		sigs = append(sigs, signal{uid: d.UserID, vid: d.VideoID, m: m, w: w, positive: w >= 1, strong: d.Shared || w >= 1, kind: kind})
 	}
 	for u := range users {
 		stats.ZRemRangeByScore(ctx, uKey(u, "w"), "-inf", strconv.FormatInt(now.Add(-48*time.Hour).Unix(), 10))
@@ -365,7 +367,7 @@ func (s *Service) OnImpressions(ctx context.Context, envs []events.Envelope) err
 	return s.rehot(ctx, keys(videos))
 }
 
-var knownLabels = map[string]bool{"co": true, "follow": true, "author": true, "tag": true, "hot": true, "fresh": true, "other": true, "a": true, "b": true}
+var knownLabels = map[string]bool{"co": true, "follow": true, "author": true, "tag": true, "hot": true, "fresh": true, "repeat": true, "other": true, "a": true, "b": true}
 
 // label keeps client-sent metric labels to a known set (unbounded labels
 // would blow up Prometheus).
@@ -475,6 +477,50 @@ func (s *Service) Interests(ctx context.Context, uid string) ([]Interest, error)
 			continue
 		}
 		out = append(out, Interest{Tag: z.Member.(string), Weight: math.Round(w*100) / 100})
+	}
+	return out, nil
+}
+
+// SetInterests seeds a new viewer's interests from the topics they pick at
+// sign-up ("What do you like?"), which fixes the cold start: without it the
+// feed can only find their tastes by chance. Each pick counts like a few
+// finished videos and fades like any other signal.
+func (s *Service) SetInterests(ctx context.Context, uid string, picked []string) error {
+	tags := normTags(picked)
+	if len(tags) > 10 {
+		tags = tags[:10]
+	}
+	sigs := make([]signal, 0, len(tags))
+	for _, t := range tags {
+		sigs = append(sigs, signal{uid: uid, m: meta{tags: []string{t}}, w: wPicked, strong: true, kind: "picked"})
+	}
+	return s.applySignals(ctx, sigs)
+}
+
+// Topic is a suggestion for the interest picker.
+type Topic struct {
+	Tag    string `json:"tag"`
+	Videos int64  `json:"videos"`
+}
+
+// Topics suggests hashtags for the picker: the most used tags that still
+// say something specific (not #naija or #fyp).
+func (s *Service) Topics(ctx context.Context, kind string, n int) ([]Topic, error) {
+	s.init()
+	zs, err := s.R.ZRevRangeWithScores(ctx, tagDFKey(kind), 0, 199).Result()
+	if err != nil {
+		return nil, err
+	}
+	spec := s.specificity(ctx, kind)
+	out := make([]Topic, 0, n)
+	for _, z := range zs {
+		t := z.Member.(string)
+		if v, ok := spec[t]; (ok && v < 1) || z.Score < 3 {
+			continue
+		}
+		if out = append(out, Topic{Tag: t, Videos: int64(z.Score)}); len(out) == n {
+			break
+		}
 	}
 	return out, nil
 }

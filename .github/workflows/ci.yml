@@ -97,6 +97,30 @@ jobs:
         uses: actions/upload-artifact@v4
         with: { name: e2e-logs, path: /tmp/lumo-e2e/logs }
 
+  # Recommender quality: simulated viewers through the real feed code.
+  # Fails if personalization stops clearly beating random and
+  # popularity-only ranking, starves new creators, or the interest picker
+  # stops fixing cold start (svc-feed/internal/app/sim_test.go).
+  recommender:
+    needs: changes
+    if: contains(needs.changes.outputs.modules, 'svc-feed')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+    defaults:
+      run:
+        working-directory: svc-feed
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.26", cache-dependency-path: svc-feed/go.mod }
+      - run: go mod tidy
+      - run: go test ./internal/app -run Sim -v -count=1 -timeout 15m
+        env: { LUMO_SIM: "1", LUMO_TEST_REDIS: "redis://localhost:6379/9" }
+
   # Alert rules and dashboards: every PromQL expression must parse, every
   # alert needs a severity and a runbook section, and the dashboard file
   # must match its generator.

@@ -24,6 +24,9 @@ type Weights struct {
 	Trending float64 `json:"trending"` // position in the global hot list
 	Explore  float64 `json:"explore"`  // uncertainty bonus for videos with few impressions
 	Jitter   float64 `json:"jitter"`   // randomness so refreshes differ
+	// AffScale: how much decayed signal makes a "strong" interest (interest
+	// = tanh(signal / AffScale)). Lower reacts faster to fewer signals.
+	AffScale float64 `json:"aff_scale"`
 
 	// Re-ranking.
 	SameAuthor   float64 `json:"same_author"`   // penalty per earlier pick from the same creator
@@ -31,9 +34,14 @@ type Weights struct {
 	ExploreEvery int     `json:"explore_every"` // one slot in N is reserved for discovery (0 = off)
 }
 
+// DefaultWeights were chosen with the offline simulation (sim_test.go):
+// stronger, faster-reacting taste terms and lighter global popularity
+// lifted simulated completion from 19% to 43% over random-like ranking
+// while spreading views across more creators. Confirm with an A/B test on
+// real viewers before trusting any change.
 var DefaultWeights = Weights{
-	Tag: 1.0, Author: 1.2, Follow: 0.5, Co: 0.8, Quality: 1.5, Fresh: 0.35, Trending: 0.3, Explore: 0.25, Jitter: 0.05,
-	SameAuthor: 0.6, SameTag: 0.15, ExploreEvery: 5,
+	Tag: 2.0, Author: 1.2, Follow: 0.5, Co: 0.8, Quality: 0.8, Fresh: 0.35, Trending: 0.15, Explore: 0.25, Jitter: 0.05,
+	AffScale: 1.5, SameAuthor: 0.6, SameTag: 0.15, ExploreEvery: 5,
 }
 
 // Arms picks the weight set for a user.
@@ -92,6 +100,7 @@ const (
 	wReport        = -3.0
 	wReportAuth    = -6.0
 	wTopicRemoved  = -3.0
+	wPicked        = 2.5 // a topic chosen in the sign-up picker
 )
 
 // watchWeight turns one view into an interest signal. For short videos
@@ -146,7 +155,28 @@ func tagShare(w float64, n int) float64 {
 }
 
 // aff squashes a decayed interest score to -1..1.
-func aff(v float64) float64 { return math.Tanh(v / 4) }
+func aff(v float64) float64 { return affScaled(v, 4) }
+
+func affScaled(v, scale float64) float64 {
+	if scale <= 0 {
+		scale = 4
+	}
+	return math.Tanh(v / scale)
+}
+
+// specificity is how much a hashtag says about a video: 1 for tags on up
+// to 15% of the catalogue, falling to 0 for tags on 60% or more (#naija,
+// #fyp on nearly everything), like inverse document frequency. Broad but
+// real topics in a young catalogue (#comedy on 35%) still count, partly.
+func specificity(share float64) float64 {
+	switch {
+	case share <= 0.15:
+		return 1
+	case share >= 0.60:
+		return 0
+	}
+	return (0.60 - share) / 0.45
+}
 
 // ---- video statistics ----
 
@@ -206,11 +236,14 @@ const (
 	srcTag
 	srcHot
 	srcFresh
+	srcRepeat // already seen, brought back because fresh candidates ran out
 )
 
 // label is the main reason a video was picked (most personal first).
 func (s source) label() string {
 	switch {
+	case s&srcRepeat != 0:
+		return "repeat"
 	case s&srcCo != 0:
 		return "co"
 	case s&srcFollow != 0:
@@ -256,18 +289,23 @@ func (c *cand) mainTag() string {
 }
 
 // setAffinity fills tagAff and authAff from the viewer's interests: the best
-// matching hashtag, pulled down by any hashtag they've pushed away.
-func (c *cand) setAffinity(tags, authors map[string]float64) {
+// matching hashtag, pulled down by any hashtag they've pushed away, each
+// weighted by how specific the tag is (spec: tag -> 0..1; missing = 1).
+func (c *cand) setAffinity(tags, authors map[string]float64, spec map[string]float64, scale float64) {
 	best, worst := 0.0, 0.0
 	for _, t := range c.tags {
 		if v, ok := tags[t]; ok {
-			a := aff(v)
+			k := 1.0
+			if s, ok := spec[t]; ok {
+				k = s
+			}
+			a := k * affScaled(v, scale)
 			best = math.Max(best, a)
 			worst = math.Min(worst, a)
 		}
 	}
 	c.tagAff = best + worst
-	c.authAff = aff(authors[c.owner])
+	c.authAff = affScaled(authors[c.owner], scale)
 }
 
 // scoreOf is the ranking formula.

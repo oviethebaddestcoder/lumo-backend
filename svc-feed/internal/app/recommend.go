@@ -28,7 +28,7 @@ import (
 
 const (
 	retrTags    = 8
-	retrPerTag  = 30
+	retrPerTag  = 80
 	retrAuthors = 10
 	retrFollows = 20
 	retrPerAuth = 4
@@ -62,6 +62,7 @@ func (s *Service) init() {
 		s.statCache = cache.New[Stats](30*time.Second, 500_000)
 		s.anonCache = cache.New[[]ranked](30*time.Second, 4)
 		s.listCache = cache.New[[]string](5*time.Second, 20_000)
+		s.specCache = cache.New[map[string]float64](time.Minute, 4)
 		if s.Arms.A == (Weights{}) {
 			s.Arms.A, s.Arms.B = DefaultWeights, DefaultWeights
 		}
@@ -189,9 +190,51 @@ func (s *Service) recommend(ctx context.Context, uid, kind string, page, pages i
 	if err != nil {
 		return nil, err
 	}
-	if cands, err = s.dropSeen(ctx, uid, cands); err != nil {
+	fresh, seen, err := s.dropSeen(ctx, uid, cands)
+	if err != nil {
 		return nil, err
 	}
+	now := time.Now().Unix()
+	out, err := s.rankSet(ctx, uid, kind, prof, w, fresh, page*pages, page, now)
+	if err != nil {
+		return nil, err
+	}
+	// Fresh candidates ran out (small catalogue, or a heavy viewer): rather
+	// than an empty feed, bring back videos seen longest ago.
+	if need := page*pages - len(out); need > 0 && len(seen) > 0 {
+		// Skip the most recent half of what was seen (at most 50), so even a
+		// tiny catalogue repeats without showing the last few videos again.
+		guard := min(int64(recentRepeatGuard), s.R.ZCard(ctx, seenKey(uid)).Val()/2)
+		recent, err := s.R.ZRevRange(ctx, seenKey(uid), 0, max(guard-1, 0)).Result()
+		if err != nil {
+			return nil, err
+		}
+		for _, id := range recent {
+			delete(seen, id)
+		}
+		for _, r := range out {
+			delete(seen, r.id)
+		}
+		for _, c := range seen {
+			c.src |= srcRepeat
+		}
+		more, err := s.rankSet(ctx, uid, kind, prof, w, seen, need, page, now)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, more...)
+	}
+	return out, nil
+}
+
+// recentRepeatGuard caps how many of the most recently served videos are
+// held back from repeats.
+const recentRepeatGuard = 50
+
+// rankSet attaches features, removes hidden or pushed-away creators, scores
+// and re-ranks one candidate set.
+func (s *Service) rankSet(ctx context.Context, uid, kind string, prof *profile, w Weights, cands map[string]*cand, n, page int, now int64) ([]ranked, error) {
+	spec := s.specificity(ctx, kind)
 	list, err := s.features(ctx, kind, cands)
 	if err != nil {
 		return nil, err
@@ -199,21 +242,20 @@ func (s *Service) recommend(ctx context.Context, uid, kind string, page, pages i
 	if list, err = s.dropHidden(ctx, uid, list); err != nil {
 		return nil, err
 	}
-	now := time.Now().Unix()
 	kept := list[:0]
 	for _, c := range list {
 		if c.owner == uid {
 			continue
 		}
 		c.follows = prof.follows[c.owner]
-		c.setAffinity(prof.tags, prof.authors)
+		c.setAffinity(prof.tags, prof.authors, spec, w.AffScale)
 		if c.authAff < -0.6 || c.tagAff < -0.8 {
 			continue // the viewer has clearly pushed this away
 		}
 		c.score = scoreOf(c, w, now, rand.Float64)
 		kept = append(kept, c)
 	}
-	return toRanked(rerank(kept, page*pages, page, w)), nil
+	return toRanked(rerank(kept, n, page, w)), nil
 }
 
 func toRanked(cs []*cand) []ranked {
@@ -304,7 +346,18 @@ func (s *Service) retrieve(ctx context.Context, kind string, p *profile) (map[st
 			shared[key] = pipe.ZRevRange(ctx, key, 0, n-1)
 		}
 	}
-	tags := head(p.topTags, retrTags)
+	// Generic tags (#naija, #fyp) say little about taste: don't spend
+	// retrieval on them.
+	spec := s.specificity(ctx, kind)
+	tags := make([]string, 0, retrTags)
+	for _, t := range p.topTags {
+		if v, ok := spec[t]; ok && v < 0.1 {
+			continue
+		}
+		if tags = append(tags, t); len(tags) == retrTags {
+			break
+		}
+	}
 	for _, t := range tags {
 		global(tagKey(kind, t), retrPerTag)
 	}
@@ -386,9 +439,12 @@ func head(s []string, n int) []string {
 	return s
 }
 
-func (s *Service) dropSeen(ctx context.Context, uid string, cands map[string]*cand) (map[string]*cand, error) {
+// dropSeen splits candidates into unseen and already-seen (kept for the
+// repeat fallback).
+func (s *Service) dropSeen(ctx context.Context, uid string, cands map[string]*cand) (fresh, seen map[string]*cand, err error) {
+	seen = map[string]*cand{}
 	if len(cands) == 0 {
-		return cands, nil
+		return cands, seen, nil
 	}
 	ids := make([]string, 0, len(cands))
 	for id := range cands {
@@ -396,14 +452,15 @@ func (s *Service) dropSeen(ctx context.Context, uid string, cands map[string]*ca
 	}
 	scores, err := s.R.ZMScore(ctx, seenKey(uid), ids...).Result()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	for i, id := range ids {
 		if scores[i] != 0 {
+			seen[id] = cands[id]
 			delete(cands, id)
 		}
 	}
-	return cands, nil
+	return cands, seen, nil
 }
 
 // features attaches metadata and stats, from the in-process caches when
@@ -529,4 +586,29 @@ func sample(pool []ranked, n int) []ranked {
 		out = append(out, ks[best].r)
 	}
 	return out
+}
+
+// specificity returns tag -> 0..1 for the most common tags of a feed kind
+// (tags not listed are fully specific). Cached per pod for a minute.
+func (s *Service) specificity(ctx context.Context, kind string) map[string]float64 {
+	if m, ok := s.specCache.Get(kind); ok {
+		return m
+	}
+	m := map[string]float64{}
+	pipe := s.R.Pipeline()
+	top := pipe.ZRevRangeWithScores(ctx, tagDFKey(kind), 0, 499)
+	total := pipe.Get(ctx, vCountKey(kind))
+	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
+		return m // fall back to treating every tag as specific
+	}
+	n, _ := total.Float64()
+	if n >= 20 { // too few videos to judge
+		for _, z := range top.Val() {
+			if sp := specificity(z.Score / n); sp < 1 {
+				m[z.Member.(string)] = sp
+			}
+		}
+	}
+	s.specCache.Set(kind, m)
+	return m
 }

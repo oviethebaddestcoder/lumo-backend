@@ -43,6 +43,10 @@ Every step talks to the gateway exactly as the apps do, then waits for the effec
 10. A report reaches the moderation queue; removing the video takes it off every feed.
 11. Live room: create, list, viewer joins, gifts update the room total and host diamonds, only the host can end it.
 12. Account deletion revokes tokens and removes the public profile.
+13. **Realtime over WebSockets through the gateway:** a DM arrives live on the recipient's personal channel; live-room chat and gifts reach the host as they happen.
+14. **Interest picker:** suggested topics are listed, and picks become the new viewer's interests.
+
+`journey/demo_test.go` (`LUMO_E2E_DEMO=1`) fills a running stack with realistic demo content for screenshots: 4 creators, 9 transcoded videos, a social graph, gifts, a pending cash-out, DMs and a live room.
 
 Bugs this caught on its first runs (all fixed):
 - Following didn't show a new follow for 2 minutes.

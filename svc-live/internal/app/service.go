@@ -354,7 +354,7 @@ func (s *Service) StreamKey(ctx context.Context, p auth.Principal, rotate bool) 
 	var k StreamKey
 	var ingressID string
 	err := s.Pool.QueryRow(ctx, `SELECT ingress_id, rtmp_url, stream_key FROM stream_keys WHERE user_id = $1`, p.UserID).Scan(&ingressID, &k.RTMPURL, &k.StreamKey)
-	if err == nil && !rotate {
+	if err == nil && !rotate && k.RTMPURL != "" && k.StreamKey != "" {
 		return k, nil
 	}
 	if err != nil && !db.IsNoRows(err) {
@@ -365,8 +365,12 @@ func (s *Service) StreamKey(ctx context.Context, p auth.Principal, rotate bool) 
 	}
 	host, _ := s.Users.Get(ctx, p.UserID)
 	in, err := s.LK.CreateIngress(ctx, "studio-"+p.UserID, "idle-"+p.UserID, p.UserID, host.DisplayName)
+	if err == nil && (in.ID == "" || in.URL == "" || in.StreamKey == "") {
+		// Never store (and keep showing) a half-made key.
+		err = fmt.Errorf("livekit: ingress missing id, url or stream key")
+	}
 	if err != nil {
-		return k, errs.Unavailable("live_unavailable", "Couldn't create a stream key right now.").Wrap(err)
+		return StreamKey{}, errs.Unavailable("live_unavailable", "Couldn't create a stream key right now.").Wrap(err)
 	}
 	_, err = s.Pool.Exec(ctx, `INSERT INTO stream_keys (user_id, ingress_id, rtmp_url, stream_key) VALUES ($1, $2, $3, $4)
 		ON CONFLICT (user_id) DO UPDATE SET ingress_id = EXCLUDED.ingress_id, rtmp_url = EXCLUDED.rtmp_url,

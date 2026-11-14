@@ -275,3 +275,64 @@ func TestFollowInvalidatesCachedFollowList(t *testing.T) {
 		t.Fatal("stale list cached after a newer change")
 	}
 }
+
+// A viewer who has seen the whole catalogue still gets a feed (oldest-seen
+// videos come back as "repeat"), never the ones they just watched.
+func TestFeedNeverRunsDry(t *testing.T) {
+	rurl := os.Getenv("LUMO_TEST_REDIS")
+	if rurl == "" {
+		t.Skip("set LUMO_TEST_REDIS")
+	}
+	ctx := context.Background()
+	rdb, _ := redisx.Open(ctx, rurl, "", "")
+	rdb.FlushDB(ctx)
+	id := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var items []events.UserPublic
+		for _, x := range strings.Split(r.URL.Query().Get("ids"), ",") {
+			items = append(items, events.UserPublic{ID: x, Status: "active"})
+		}
+		json.NewEncoder(w).Encode(map[string]any{"items": items})
+	}))
+	defer id.Close()
+	s := &Service{R: rdb, Users: userdir.New(id.URL)}
+	now := time.Now()
+	for i := 0; i < 9; i++ {
+		v := events.NewID()
+		s.OnVideo(ctx, events.MustNew("m", events.VideoState, v, events.VideoStateData{ID: v, OwnerID: events.NewID(), Kind: "short", Status: "ready",
+			Visibility: "public", Hashtags: []string{"cooking"}, DurationMS: 10_000, CreatedAt: now.Add(-time.Duration(i) * time.Minute)}))
+	}
+	viewer := events.NewID()
+	var lastPage []Item
+	seen := map[string]bool{}
+	for p := 0; p < 3; p++ {
+		items, err := s.ForYou(ctx, viewer, "short", 3)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, it := range items {
+			if seen[it.ID] {
+				t.Fatalf("repeat before the catalogue ran out: %s", it.ID)
+			}
+			seen[it.ID] = true
+		}
+		lastPage = items
+	}
+	if len(seen) != 9 {
+		t.Fatalf("saw %d of 9", len(seen))
+	}
+	rdb.Del(ctx, queueKey(viewer, "short"))
+	items, err := s.ForYou(ctx, viewer, "short", 3)
+	if err != nil || len(items) == 0 {
+		t.Fatalf("feed ran dry: %v %d", err, len(items))
+	}
+	for _, it := range items {
+		if it.Source != "repeat" {
+			t.Fatalf("expected repeats, got source %q", it.Source)
+		}
+		for _, l := range lastPage {
+			if it.ID == l.ID {
+				t.Fatal("repeated a video from the page just watched")
+			}
+		}
+	}
+}

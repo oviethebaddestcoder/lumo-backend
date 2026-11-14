@@ -84,7 +84,7 @@ ENV[messaging]="DATABASE_URL=$(db messaging)"
 ENV[moderation]="DATABASE_URL=$(db moderation)"
 ENV[gateway]="ROUTES=/.well-known=http://localhost:18081,/v1/auth=http://localhost:18081,/v1/me=http://localhost:18081,/v1/users=http://localhost:18081,/v1/wallet=http://localhost:18082,/v1/live=http://localhost:18083,/v1/rt=http://localhost:18084,/v1/social=http://localhost:18085,/v1/media=http://localhost:18086,/v1/feed=http://localhost:18087,/v1/notify=http://localhost:18088,/v1/dm=http://localhost:18089,/v1/moderation=http://localhost:18090
   RATE_PER_USER_MIN=${RATE_PER_USER_MIN:-100000} RATE_PER_IP_MIN=${RATE_PER_IP_MIN:-100000} RATE_AUTH_PER_IP_MIN=${RATE_AUTH_PER_IP_MIN:-100000}
-  ALLOWED_ORIGINS=http://localhost:3000 TRUSTED_PROXY_CIDRS="
+  ALLOWED_ORIGINS=${E2E_ORIGINS:-http://localhost:3000} TRUSTED_PROXY_CIDRS="
 declare -A PORT=([gateway]=18080 [identity]=18081 [wallet]=18082 [live]=18083 [realtime]=18084 [social]=18085 [media]=18086
   [feed]=18087 [notifier]=18088 [messaging]=18089 [moderation]=18090 [transcoder]=18091)
 

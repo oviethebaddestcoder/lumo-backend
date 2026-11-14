@@ -589,6 +589,9 @@ func TestJourney(t *testing.T) {
 	})
 
 	step("direct messages", func(t *testing.T) {
+		// The creator's app holds the personal channel open; the DM must
+		// arrive there live, not on the next poll.
+		live := dialWS(t, creator, "/v1/rt/me")
 		var conv struct {
 			ID string `json:"id"`
 		}
@@ -611,6 +614,7 @@ func TestJourney(t *testing.T) {
 		if m1.ID == "" || m1.ID != m2.ID {
 			t.Fatalf("retry made a second message: %s vs %s", m1.ID, m2.ID)
 		}
+		live.expect(t, "dm", 10*time.Second, func(m rtMsg) bool { return strings.Contains(string(m.Data), "Can I get the recipe?") })
 		var list struct {
 			Items []struct {
 				ID          string `json:"id"`
@@ -757,12 +761,18 @@ func TestJourney(t *testing.T) {
 		if conn.Token == "" && conn.Mode == "webrtc" {
 			t.Fatalf("viewer connection %+v", conn)
 		}
+		// Both sides in the room's realtime channel: chat and gifts arrive live.
+		hostWS := dialWS(t, creator, "/v1/rt/rooms/"+cr.Room.ID)
+		fanWS := dialWS(t, fan, "/v1/rt/rooms/"+cr.Room.ID)
+		fanWS.send(t, map[string]string{"type": "chat", "text": "Hello from Lagos 👋"})
+		hostWS.expect(t, "chat", 10*time.Second, func(m rtMsg) bool { return strings.Contains(string(m.Data), "Hello from Lagos") })
 		var before struct {
 			Diamonds int64 `json:"diamonds"`
 		}
 		must(t, 200, creator, "GET", "/v1/wallet", nil).json(t, &before)
 		must(t, 200, fan, "POST", "/v1/wallet/gifts/send", map[string]any{"receiver_id": creator.id, "gift_id": "rose", "qty": 2, "room_id": cr.Room.ID},
 			"Idempotency-Key", newID())
+		hostWS.expect(t, "gift", 15*time.Second, nil)
 		eventually(t, "room gift total and host diamonds", 20*time.Second, func() string {
 			var room struct {
 				GiftCoins int64 `json:"gift_coins"`
@@ -793,6 +803,32 @@ func TestJourney(t *testing.T) {
 			}
 			return ""
 		})
+	})
+
+	step("interest picker seeds a new viewer's feed", func(t *testing.T) {
+		var topics struct {
+			Items []struct {
+				Tag string `json:"tag"`
+			} `json:"items"`
+		}
+		must(t, 200, nil, "GET", "/v1/feed/topics", nil).json(t, &topics)
+		newbie := &user{name: "newbie", email: "load200@e2e.test", code: "000000"}
+		signIn(t, newbie)
+		must(t, 204, newbie, "POST", "/v1/feed/me/interests", map[string]any{"tags": []string{"comedy", "cooking"}})
+		var ints struct {
+			Items []struct {
+				Tag string `json:"tag"`
+			} `json:"items"`
+		}
+		must(t, 200, newbie, "GET", "/v1/feed/me/interests", nil).json(t, &ints)
+		got := map[string]bool{}
+		for _, i := range ints.Items {
+			got[i.Tag] = true
+		}
+		if !got["comedy"] || !got["cooking"] {
+			t.Fatalf("picked topics not in interests: %+v", ints.Items)
+		}
+		must(t, 400, newbie, "POST", "/v1/feed/me/interests", map[string]any{"tags": []string{}})
 	})
 
 	step("delete account signs out everywhere", func(t *testing.T) {

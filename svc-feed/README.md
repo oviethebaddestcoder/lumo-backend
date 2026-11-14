@@ -28,7 +28,7 @@ A two-stage recommender, rebuilt from the viewer's own behaviour in real time.
 | Not interested | −2 topics, −6 creator |
 | Report video | −3 topics, −6 creator |
 
-Weights are spread across a video's hashtags (÷√n), so hashtag stuffing doesn't pay. Interest fades with a **5-day half-life** (forward decay, so each update is a single atomic `ZINCRBY`). A view counts once per viewer per video per 2 days, which also makes Kafka redelivery harmless.
+Interest builds as tanh(signal / 1.5). Weights are spread across a video's hashtags (÷√n), so hashtag stuffing doesn't pay. Interest fades with a **5-day half-life** (forward decay, so each update is a single atomic `ZINCRBY`). A view counts once per viewer per video per 2 days, which also makes Kafka redelivery harmless.
 
 **2. Retrieval** (`recommend.go`) gathers ~900 candidates per viewer from: their top 8 hashtags, top 10 creators, 20 followed creators, **co-engagement** ("people who finished what you finished also finished…", an item-to-item graph built from every positive view), global trending, and fresh uploads. Seen videos, blocked creators (both ways) and anything the viewer clearly pushed away are removed.
 
@@ -50,6 +50,38 @@ Three pages are queued per viewer for 15 minutes. A like, share, follow or "not 
 
 **Measured** (local Redis, 20k videos, 400 hashtags, 2k active viewers): full re-rank of 30 items p50 2.5 ms, p95 4.9 ms; a page from the queue p50 0.5 ms.
 
+**Never runs dry.** When a viewer has seen every fresh candidate (small catalogue, heavy viewer), the feed brings back the videos they saw longest ago (`rec_source=repeat`). It never repeats the most recent half of what they saw (at most 50).
+
+**Generic hashtags count for less.** A tag on 15% or fewer of videos counts fully, falling to zero at 60% (#naija, #fyp), like inverse document frequency. Common tags also don't use up retrieval slots.
+
+**Sign-up interest picker.** `GET /v1/feed/topics` suggests popular specific tags, and `POST /v1/feed/me/interests` seeds a new viewer's profile. Each pick counts like a few finished videos and fades normally. The mobile app shows it once after sign-up.
+
+### Offline evaluation (`internal/app/sim_test.go`)
+
+A simulation with 300 viewers who have hidden tastes, and 2,000 videos with hidden quality:
+- each viewer watches 12 pages of 10;
+- every page comes from the real `ForYou` code;
+- every watch, skip and like goes back through the real signal pipeline.
+
+CI runs it whenever svc-feed changes. Average of 3 seeds:
+
+| Policy | Finished | First 3 pages | Taste match | Catalogue reached | Views to top 10% creators |
+|---|---|---|---|---|---|
+| Random order | 20.0% | 16.8% | 0.13 | 96% | 30% |
+| Popularity only | 13.6% | 14.1% | 0.06 | 7% | 54% |
+| Lumo (before tuning, 14 Nov) | 18.8% | 14.9% | 0.11 | 29% | 65% |
+| **Lumo** | **34.7%** | 24.0% | 0.31 | 77% | 42% |
+| **Lumo + interest picker** | **41.9%** | **47.0%** | 0.40 | 100% | 35% |
+
+The simulation found three fixes that took finished views from 18.8% to 34.7%:
+1. discounting generic tags;
+2. re-ranking after every finished video (before, the next 2 pages were pre-ranked and ignored it);
+3. fetching 80 videos per interest instead of 30.
+
+Weights were then tuned on it. To try a candidate weight set, run `LUMO_SIM=1 LUMO_SIM_WEIGHTS='{"tag":2.5}' go test ./internal/app -run Sim -v`.
+
+Simulated viewers are not real ones. Confirm any change with an A/B test (`RANK_B_WEIGHTS`) before trusting it.
+
 **Signed-out viewers** get a shared trending pool, re-ranked every 30 s per pod and sampled so pages differ.
 
 ### Following
@@ -67,6 +99,8 @@ Fan-out on read: followee IDs come from svc-social (cached 2 min, at most 2,000 
 | `POST /v1/feed/not-interested` | `{video_id}` |
 | `GET /v1/feed/me/interests` | The viewer's top hashtags (for a "Your interests" screen) |
 | `DELETE /v1/feed/me/interests/{tag}` | Remove a topic |
+| `POST /v1/feed/me/interests` | `{tags:[...]}` from the sign-up picker (1–20) |
+| `GET /v1/feed/topics` | Suggested topics for the picker (public, cached 5 min) |
 | `POST /v1/feed/me/reset` | "Refresh your For You": forget interests and history (blocks stay) |
 
 ## Events

@@ -28,6 +28,8 @@ func (a *API) Routes() http.Handler {
 	mux.Handle("POST /v1/feed/impressions", priv(a.impressions))
 	mux.Handle("POST /v1/feed/not-interested", priv(a.notInterested))
 	mux.Handle("GET /v1/feed/me/interests", priv(a.interests))
+	mux.Handle("POST /v1/feed/me/interests", priv(a.setInterests))
+	mux.Handle("GET /v1/feed/topics", opt(a.topics))
 	mux.Handle("DELETE /v1/feed/me/interests/{tag}", priv(a.removeInterest))
 	mux.Handle("POST /v1/feed/me/reset", priv(a.reset))
 	return httpx.Chain(mux, httpx.Timeout(5*time.Second))
@@ -124,5 +126,37 @@ func (a *API) reset(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	w.WriteHeader(http.StatusNoContent)
+	return nil
+}
+
+func (a *API) setInterests(w http.ResponseWriter, r *http.Request) error {
+	p, _ := auth.User(r)
+	var in struct {
+		Tags []string `json:"tags"`
+	}
+	if err := httpx.Decode(w, r, &in); err != nil {
+		return err
+	}
+	if len(in.Tags) == 0 || len(in.Tags) > 20 {
+		return errs.BadRequest("tags_invalid", "Pick between 1 and 20 topics.")
+	}
+	if err := a.Svc.SetInterests(r.Context(), p.UserID, in.Tags); err != nil {
+		return err
+	}
+	w.WriteHeader(http.StatusNoContent)
+	return nil
+}
+
+func (a *API) topics(w http.ResponseWriter, r *http.Request) error {
+	kind := r.URL.Query().Get("kind")
+	if kind != "long" {
+		kind = "short"
+	}
+	items, err := a.Svc.Topics(r.Context(), kind, 24)
+	if err != nil {
+		return err
+	}
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	httpx.JSON(w, http.StatusOK, map[string]any{"items": items})
 	return nil
 }

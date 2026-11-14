@@ -51,9 +51,16 @@ func main() {
 
 	go serve(*s3Addr, newS3())
 	go serve(*paystackAddr, newPaystack())
+	var ingresses atomic.Int64
 	go serve(*livekitAddr, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Twirp-style LiveKit server API: answer every call with an empty object.
+		// Twirp-style LiveKit server API. Ingress creation returns a real-looking
+		// RTMP endpoint; everything else answers with an empty object.
 		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/livekit.Ingress/CreateIngress") {
+			n := ingresses.Add(1)
+			fmt.Fprintf(w, `{"ingress_id":"IN_%d","url":"rtmps://ingest.lumo.test:443/x","stream_key":"sk_%d_%d"}`, n, n, time.Now().UnixNano()%1e6)
+			return
+		}
 		w.Write([]byte(`{}`))
 	}))
 	sig := make(chan os.Signal, 1)
