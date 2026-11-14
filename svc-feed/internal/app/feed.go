@@ -55,6 +55,10 @@ type Service struct {
 	metaCache *cache.Cache[meta]
 	statCache *cache.Cache[Stats]
 	anonCache *cache.Cache[[]ranked]
+	// Global candidate lists (trending, fresh, per-hashtag) are the same
+	// for every viewer, so each pod reads them from Redis at most every few
+	// seconds instead of on every ranking.
+	listCache *cache.Cache[[]string]
 }
 
 func vKey(id string) string     { return "feed:v:" + id }

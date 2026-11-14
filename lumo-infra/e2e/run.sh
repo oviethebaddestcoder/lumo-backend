@@ -7,6 +7,7 @@
 #   lumo-infra/e2e/run.sh            # build, run, test, stop
 #   KEEP=1 lumo-infra/e2e/run.sh     # leave the stack running afterwards
 #   ONLY_UP=1 lumo-infra/e2e/run.sh  # start the stack, skip the journey
+#   then: (cd lumo-infra/e2e && go run ./load -vus 100 -duration 60s)
 set -euo pipefail
 
 ROOT=${ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}
@@ -60,10 +61,12 @@ export JWKS_URL=http://localhost:18081/.well-known/jwks.json
 export IDENTITY_URL=http://localhost:18081 SOCIAL_URL=http://localhost:18085
 export INTERNAL_TOKEN=e2e-internal-token
 db() { echo "$PG/e2e_$1?sslmode=disable"; }
+# Accounts for the load test (load/): load1..200@e2e.test, code 000000.
+LOAD_ACCOUNTS=$(seq -f "load%g@e2e.test=000000" 1 200 | paste -sd,)
 
 declare -A ENV
 ENV[identity]="DATABASE_URL=$(db identity) SIGNING_KEYS=k1:$(base64 -w0 "$WORK/signing.pem") OTP_HMAC_SECRET=$(openssl rand -base64 32)
-  OTP_TEST_ACCOUNTS=creator@e2e.test=111111,fan@e2e.test=222222,finance@e2e.test=333333,mod@e2e.test=444444,stranger@e2e.test=555555
+  OTP_TEST_ACCOUNTS=creator@e2e.test=111111,fan@e2e.test=222222,finance@e2e.test=333333,mod@e2e.test=444444,stranger@e2e.test=555555,$LOAD_ACCOUNTS
   SMS_PROVIDER=log EMAIL_PROVIDER=log GOOGLE_CLIENT_IDS=e2e-web"
 ENV[wallet]="SHARDS=0-2047=$(db wallet_a);2048-4095=$(db wallet_b) ACCOUNT_TAG_SECRET=$(openssl rand -base64 32)
   MIN_PAYOUT_DIAMONDS=100 PAYOUT_KOBO_PER_DIAMOND=50 PAYSTACK_SECRET_KEY=sk_test_e2e PAYSTACK_BASE_URL=http://localhost:19100"

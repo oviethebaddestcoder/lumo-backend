@@ -61,6 +61,7 @@ func (s *Service) init() {
 		s.metaCache = cache.New[meta](10*time.Minute, 500_000)
 		s.statCache = cache.New[Stats](30*time.Second, 500_000)
 		s.anonCache = cache.New[[]ranked](30*time.Second, 4)
+		s.listCache = cache.New[[]string](5*time.Second, 20_000)
 		if s.Arms.A == (Weights{}) {
 			s.Arms.A, s.Arms.B = DefaultWeights, DefaultWeights
 		}
@@ -291,14 +292,24 @@ func (s *Service) loadProfile(ctx context.Context, uid string) (*profile, error)
 	return p, nil
 }
 
-// retrieve gathers candidates from every source in one pipeline.
+// retrieve gathers candidates from every source in one pipeline. Shared
+// lists come from the per-pod list cache when fresh.
 func (s *Service) retrieve(ctx context.Context, kind string, p *profile) (map[string]*cand, error) {
 	pipe := s.R.Pipeline()
-	var tagCmds, authCmds, followCmds []*redis.StringSliceCmd
+	var authCmds, followCmds []*redis.StringSliceCmd
 	var coCmds []*redis.ZSliceCmd
-	for _, t := range head(p.topTags, retrTags) {
-		tagCmds = append(tagCmds, pipe.ZRevRange(ctx, tagKey(kind, t), 0, retrPerTag-1))
+	shared := map[string]*redis.StringSliceCmd{}
+	global := func(key string, n int64) {
+		if _, ok := s.listCache.Get(key); !ok {
+			shared[key] = pipe.ZRevRange(ctx, key, 0, n-1)
+		}
 	}
+	tags := head(p.topTags, retrTags)
+	for _, t := range tags {
+		global(tagKey(kind, t), retrPerTag)
+	}
+	global(hotKey(kind), retrHot)
+	global(newKey(kind), retrFresh)
 	for _, a := range head(p.topAuthors, retrAuthors) {
 		authCmds = append(authCmds, pipe.ZRevRange(ctx, authorKey(a), 0, retrPerAuth-1))
 	}
@@ -308,11 +319,13 @@ func (s *Service) retrieve(ctx context.Context, kind string, p *profile) (map[st
 	for _, seed := range head(p.seeds, retrSeeds) {
 		coCmds = append(coCmds, pipe.ZRevRangeWithScores(ctx, coKey(seed), 0, retrPerSeed-1))
 	}
-	hot := pipe.ZRevRange(ctx, hotKey(kind), 0, retrHot-1)
-	fresh := pipe.ZRevRange(ctx, newKey(kind), 0, retrFresh-1)
 	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
 		return nil, err
 	}
+	for k, c := range shared {
+		s.listCache.Set(k, c.Val())
+	}
+	list := func(key string) []string { v, _ := s.listCache.Get(key); return v }
 	out := map[string]*cand{}
 	get := func(id string) *cand {
 		c, ok := out[id]
@@ -322,8 +335,8 @@ func (s *Service) retrieve(ctx context.Context, kind string, p *profile) (map[st
 		}
 		return c
 	}
-	for _, c := range tagCmds {
-		for _, id := range c.Val() {
+	for _, t := range tags {
+		for _, id := range list(tagKey(kind, t)) {
 			get(id).src |= srcTag
 		}
 	}
@@ -351,13 +364,13 @@ func (s *Service) retrieve(ctx context.Context, kind string, p *profile) (map[st
 			cd.co = math.Max(cd.co, recency*z.Score/top)
 		}
 	}
-	hv := hot.Val()
+	hv := list(hotKey(kind))
 	for i, id := range hv {
 		c := get(id)
 		c.src |= srcHot
 		c.hot = 1 - float64(i)/float64(len(hv))
 	}
-	for _, id := range fresh.Val() {
+	for _, id := range list(newKey(kind)) {
 		get(id).src |= srcFresh
 	}
 	for _, seed := range p.seeds {
