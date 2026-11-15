@@ -271,6 +271,7 @@ type cand struct {
 	tags    []string
 	st      Stats
 	follows bool
+	engaged bool // the viewer liked, shared or finished it: never "fresh"
 
 	tagAff, authAff float64
 	score           float64

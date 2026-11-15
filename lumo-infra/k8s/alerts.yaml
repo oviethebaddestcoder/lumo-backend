@@ -151,11 +151,11 @@ spec:
             runbook: lumo-infra/docs/runbook.md#paystackwebhookrejected
         - alert: GiftsStopped
           # Live rooms are busy but no gifts are going through: purchases or sends are broken.
-          expr: sum(rate(wallet_gift_coins_total[15m])) == 0 and sum(live_rooms_active) > 20
+          expr: sum(rate(wallet_gift_coins_total[15m])) == 0 and sum(max by (category) (live_rooms_active)) > 20
           for: 15m
           labels: { severity: page }
           annotations:
-            summary: "No gifts in 15 minutes while {{ with query \"sum(live_rooms_active)\" }}{{ . | first | value }}{{ end }} rooms are live"
+            summary: "No gifts in 15 minutes while {{ with query \"sum(max by (category) (live_rooms_active))\" }}{{ . | first | value }}{{ end }} rooms are live"
             runbook: lumo-infra/docs/runbook.md#giftsstopped
 
     - name: lumo-abuse

@@ -4,7 +4,9 @@ package redisx
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -13,21 +15,35 @@ import (
 
 // Open connects using REDIS_URL (redis:// or rediss://). If clusterAddrs is
 // set, a Cluster client is used instead (comma-separated host:port list).
+//
+// A Cluster has no URL to carry credentials, so the password comes from the
+// argument or, when that is empty, REDIS_PASSWORD; REDIS_TLS=true turns on
+// TLS (managed clusters such as ElastiCache and Upstash require both).
 func Open(ctx context.Context, url, clusterAddrs, password string) (redis.UniversalClient, error) {
+	if password == "" {
+		password = os.Getenv("REDIS_PASSWORD")
+	}
 	var c redis.UniversalClient
 	if clusterAddrs != "" {
-		c = redis.NewClusterClient(&redis.ClusterOptions{
+		opt := &redis.ClusterOptions{
 			Addrs:        strings.Split(clusterAddrs, ","),
 			Password:     password,
 			PoolSize:     200,
 			MinIdleConns: 10,
 			ReadTimeout:  2 * time.Second,
 			WriteTimeout: 2 * time.Second,
-		})
+		}
+		if os.Getenv("REDIS_TLS") == "true" {
+			opt.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+		}
+		c = redis.NewClusterClient(opt)
 	} else {
 		opt, err := redis.ParseURL(url)
 		if err != nil {
 			return nil, fmt.Errorf("redisx: parse url: %w", err)
+		}
+		if opt.Password == "" {
+			opt.Password = password
 		}
 		opt.PoolSize = 200
 		opt.MinIdleConns = 10

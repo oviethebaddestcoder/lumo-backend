@@ -526,6 +526,15 @@ func TestJourney(t *testing.T) {
 
 	step("cash out to a bank, approved by finance", func(t *testing.T) {
 		must(t, 200, creator, "PUT", "/v1/wallet/payout-account", map[string]string{"bank_code": "058", "account_number": "0123456789"})
+		// Apps show "≈ ₦…" from the server's real rate, not a guess.
+		var acct struct {
+			Rate int64 `json:"kobo_per_diamond"`
+			Min  int64 `json:"min_diamonds"`
+		}
+		must(t, 200, creator, "GET", "/v1/wallet/payout-account", nil).json(t, &acct)
+		if acct.Rate != 50 || acct.Min != 100 {
+			t.Fatalf("payout rate %+v, want 50 kobo and 100 minimum (run.sh)", acct)
+		}
 		var p struct {
 			ID     string `json:"payout_id"`
 			Status string `json:"status"`

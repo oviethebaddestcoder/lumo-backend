@@ -164,6 +164,40 @@ func (s *Service) CrossToken(ctx context.Context, p auth.Principal, pkID string)
 	return v, err
 }
 
+// SampleRooms sets live_rooms_active from the database. Every worker pod
+// reports the whole platform, so dashboards and alerts take max over pods.
+// Categories with no rooms are reset to 0 rather than left at a stale value.
+func (s *Service) SampleRooms(ctx context.Context) {
+	rows, err := s.Pool.Query(ctx, `SELECT category, count(*) FROM rooms WHERE status = 'live' GROUP BY category`)
+	if err != nil {
+		slog.ErrorContext(ctx, "sample live rooms", "err", err)
+		return
+	}
+	counts := map[string]int64{}
+	for rows.Next() {
+		var cat string
+		var n int64
+		if err := rows.Scan(&cat, &n); err != nil {
+			rows.Close()
+			slog.ErrorContext(ctx, "sample live rooms", "err", err)
+			return
+		}
+		counts[cat] = n
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		slog.ErrorContext(ctx, "sample live rooms", "err", err)
+		return
+	}
+	for _, cat := range Categories {
+		liveRooms.WithLabelValues(cat).Set(float64(counts[cat]))
+		delete(counts, cat)
+	}
+	for cat, n := range counts { // rooms in a category that was since removed
+		liveRooms.WithLabelValues(cat).Set(float64(n))
+	}
+}
+
 // Tick ends due battles and expires stale invites. Several workers may run
 // it at once: SKIP LOCKED gives each battle to exactly one of them.
 func (s *Service) Tick(ctx context.Context) {

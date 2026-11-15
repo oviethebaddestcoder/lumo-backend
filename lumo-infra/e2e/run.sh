@@ -44,17 +44,27 @@ wait
 
 echo "== databases"
 for db in identity wallet_a wallet_b live social media notifier messaging moderation; do
-  psql "$PG/postgres" -qc "DROP DATABASE IF EXISTS e2e_$db WITH (FORCE)" -c "CREATE DATABASE e2e_$db" >/dev/null
+  if [ "${KEEP_DATA:-}" = 1 ]; then # local dev (local/dev.sh): keep what is there
+    psql "$PG/postgres" -tAc "SELECT 1 FROM pg_database WHERE datname = 'e2e_$db'" | grep -q 1 || psql "$PG/postgres" -qc "CREATE DATABASE e2e_$db" >/dev/null
+  else
+    psql "$PG/postgres" -qc "DROP DATABASE IF EXISTS e2e_$db WITH (FORCE)" -c "CREATE DATABASE e2e_$db" >/dev/null
+  fi
 done
-redis-cli -u "$REDIS" FLUSHDB >/dev/null
+[ "${KEEP_DATA:-}" = 1 ] || redis-cli -u "$REDIS" FLUSHDB >/dev/null
 
 echo "== fakes"
 "$BIN/fakes" >"$LOGS/fakes.log" 2>&1 & PIDS+=($!)
 for _ in $(seq 50); do (echo >/dev/tcp/127.0.0.1/19092) 2>/dev/null && break; sleep 0.1; done
 
-# Secrets for this run only.
-openssl genpkey -algorithm ed25519 -out "$WORK/signing.pem" 2>/dev/null
-export LOG_LEVEL=${LOG_LEVEL:-warn}
+# Secrets for this run only (kept between runs with KEEP_DATA=1, so sign-ins
+# and wallet tags survive a restart).
+if [ "${KEEP_DATA:-}" != 1 ] || [ ! -f "$WORK/secrets.env" ]; then
+  openssl genpkey -algorithm ed25519 -out "$WORK/signing.pem" 2>/dev/null
+  printf 'OTP_SECRET=%s\nTAG_SECRET=%s\n' "$(openssl rand -base64 32)" "$(openssl rand -base64 32)" >"$WORK/secrets.env"
+fi
+# shellcheck disable=SC1091
+. "$WORK/secrets.env"
+export LOG_LEVEL=${LOG_LEVEL:-warn}  # dev OTP codes are logged at warn
 export KAFKA_BROKERS=localhost:19092
 export REDIS_URL=$REDIS
 export JWKS_URL=http://localhost:18081/.well-known/jwks.json
@@ -65,10 +75,10 @@ db() { echo "$PG/e2e_$1?sslmode=disable"; }
 LOAD_ACCOUNTS=$(seq -f "load%g@e2e.test=000000" 1 200 | paste -sd,)
 
 declare -A ENV
-ENV[identity]="DATABASE_URL=$(db identity) SIGNING_KEYS=k1:$(base64 -w0 "$WORK/signing.pem") OTP_HMAC_SECRET=$(openssl rand -base64 32)
+ENV[identity]="DATABASE_URL=$(db identity) SIGNING_KEYS=k1:$(base64 <"$WORK/signing.pem" | tr -d "\n") OTP_HMAC_SECRET=$OTP_SECRET
   OTP_TEST_ACCOUNTS=creator@e2e.test=111111,fan@e2e.test=222222,finance@e2e.test=333333,mod@e2e.test=444444,stranger@e2e.test=555555,$LOAD_ACCOUNTS
   SMS_PROVIDER=log EMAIL_PROVIDER=log GOOGLE_CLIENT_IDS=e2e-web"
-ENV[wallet]="SHARDS=0-2047=$(db wallet_a);2048-4095=$(db wallet_b) ACCOUNT_TAG_SECRET=$(openssl rand -base64 32)
+ENV[wallet]="SHARDS=0-2047=$(db wallet_a);2048-4095=$(db wallet_b) ACCOUNT_TAG_SECRET=$TAG_SECRET
   MIN_PAYOUT_DIAMONDS=100 PAYOUT_KOBO_PER_DIAMOND=50 PAYSTACK_SECRET_KEY=sk_test_e2e PAYSTACK_BASE_URL=http://localhost:19100"
 ENV[live]="DATABASE_URL=$(db live) LIVEKIT_WS_URL=ws://localhost:19200 LIVEKIT_API_URL=http://localhost:19200 LIVEKIT_API_KEY=e2ekey
   LIVEKIT_API_SECRET=e2e-livekit-secret-0123456789abcdef EGRESS_S3_ENDPOINT=http://localhost:19000 EGRESS_S3_BUCKET=lumo-media

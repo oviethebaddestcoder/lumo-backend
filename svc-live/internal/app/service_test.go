@@ -19,6 +19,7 @@ import (
 	"github.com/oviethebaddestcoder/lumo-backend/lumo-contracts/events"
 	"github.com/oviethebaddestcoder/lumo-backend/lumo-kit/auth"
 	"github.com/oviethebaddestcoder/lumo-backend/lumo-kit/db"
+	"github.com/oviethebaddestcoder/lumo-backend/lumo-kit/metrics"
 	"github.com/oviethebaddestcoder/lumo-backend/lumo-kit/redisx"
 	"github.com/oviethebaddestcoder/lumo-backend/lumo-kit/userdir"
 	"github.com/oviethebaddestcoder/lumo-backend/svc-live/internal/app"
@@ -186,5 +187,52 @@ func TestPKBattle(t *testing.T) {
 	s.Pool.QueryRow(ctx, `SELECT status, score_a, score_b, COALESCE(winner_room::text, '') FROM pk_battles WHERE id = $1`, inv.ID).Scan(&status, &sa, &sb, &winner)
 	if status != "ended" || sa != 80 || sb != 120 || winner != rb.ID {
 		t.Fatalf("pk result: %s %d-%d winner=%s", status, sa, sb, winner)
+	}
+}
+
+// The "gifts stopped" alert divides by live_rooms_active, so the gauge must
+// follow rooms going live and ending.
+func TestSampleRoomsGauge(t *testing.T) {
+	s := setup(t)
+	ctx := context.Background()
+	gauge := func(cat string) float64 {
+		mfs, err := metrics.Registry.Gather()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, mf := range mfs {
+			if mf.GetName() != "live_rooms_active" {
+				continue
+			}
+			for _, m := range mf.GetMetric() {
+				for _, l := range m.GetLabel() {
+					if l.GetName() == "category" && l.GetValue() == cat {
+						return m.GetGauge().GetValue()
+					}
+				}
+			}
+		}
+		return -1
+	}
+	a, _, err := s.Start(ctx, host(), app.StartInput{Title: "a", Category: "music"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Start(ctx, host(), app.StartInput{Title: "b", Category: "music"}); err != nil {
+		t.Fatal(err)
+	}
+	s.SampleRooms(ctx)
+	if g := gauge("music"); g != 2 {
+		t.Fatalf("music rooms = %v, want 2", g)
+	}
+	if g := gauge("talk"); g != 0 {
+		t.Fatalf("talk rooms = %v, want 0", g)
+	}
+	if err := s.End(ctx, a.ID, "host_ended", ""); err != nil {
+		t.Fatal(err)
+	}
+	s.SampleRooms(ctx)
+	if g := gauge("music"); g != 1 {
+		t.Fatalf("after end music rooms = %v, want 1", g)
 	}
 }

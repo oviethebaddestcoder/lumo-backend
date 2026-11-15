@@ -43,7 +43,7 @@ ROWS = [
         ("Transcode p95", 'histogram_quantile(0.95, sum by (le) (rate(transcode_job_seconds_bucket[15m])))', "s"),
     ]),
     ("Live and realtime", [
-        ("Live rooms by category", 'sum by (category) (live_rooms_active)', "short"),
+        ("Live rooms by category", 'max by (category) (live_rooms_active)', "short"),
         ("WebSocket connections", 'sum(realtime_connections)', "short"),
         ("Messages delivered / s", 'sum(rate(realtime_messages_delivered_total[5m]))', "ops"),
         ("Slow clients dropped", 'sum(rate(realtime_slow_clients_total[5m]))', "ops"),

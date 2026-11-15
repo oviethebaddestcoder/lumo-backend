@@ -13,6 +13,7 @@ import (
 	"github.com/oviethebaddestcoder/lumo-backend/lumo-contracts/events"
 	"github.com/oviethebaddestcoder/lumo-backend/lumo-kit/redisx"
 	"github.com/oviethebaddestcoder/lumo-backend/lumo-kit/userdir"
+	"github.com/redis/go-redis/v9"
 )
 
 // TestRecommenderLearns runs the whole loop against Redis: catalogue in,
@@ -319,6 +320,11 @@ func TestFeedNeverRunsDry(t *testing.T) {
 	}
 	if len(seen) != 9 {
 		t.Fatalf("saw %d of 9", len(seen))
+	}
+	// The viewer liked or finished everything: engaged videos must still be
+	// repeat candidates, or a small catalogue goes blank (preview run bug).
+	for id := range seen {
+		rdb.ZAdd(ctx, uKey(viewer, "p"), redis.Z{Score: float64(time.Now().Unix()), Member: id})
 	}
 	rdb.Del(ctx, queueKey(viewer, "short"))
 	items, err := s.ForYou(ctx, viewer, "short", 3)

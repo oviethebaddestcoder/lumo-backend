@@ -1032,7 +1032,7 @@ data:
           },
           "targets": [
             {
-              "expr": "sum by (category) (live_rooms_active)",
+              "expr": "max by (category) (live_rooms_active)",
               "refId": "A",
               "legendFormat": "__auto"
             }

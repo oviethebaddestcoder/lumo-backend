@@ -426,8 +426,13 @@ func (s *Service) retrieve(ctx context.Context, kind string, p *profile) (map[st
 	for _, id := range list(newKey(kind)) {
 		get(id).src |= srcFresh
 	}
+	// Videos the viewer already engaged with are never shown as new, but they
+	// stay candidates for the repeat fallback: dropping them outright left a
+	// small catalogue with nothing to repeat (found by the preview run).
 	for _, seed := range p.seeds {
-		delete(out, seed) // already engaged with
+		if c, ok := out[seed]; ok {
+			c.engaged = true
+		}
 	}
 	return out, nil
 }
@@ -455,7 +460,7 @@ func (s *Service) dropSeen(ctx context.Context, uid string, cands map[string]*ca
 		return nil, nil, err
 	}
 	for i, id := range ids {
-		if scores[i] != 0 {
+		if scores[i] != 0 || cands[id].engaged {
 			seen[id] = cands[id]
 			delete(cands, id)
 		}

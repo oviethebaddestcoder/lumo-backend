@@ -129,12 +129,17 @@ func worker(ctx context.Context) error {
 		func(ctx context.Context) error {
 			t := time.NewTicker(time.Second)
 			defer t.Stop()
+			sample := time.NewTicker(30 * time.Second)
+			defer sample.Stop()
+			c.svc.SampleRooms(ctx)
 			for {
 				select {
 				case <-ctx.Done():
 					return nil
 				case <-t.C:
 					c.svc.Tick(ctx)
+				case <-sample.C:
+					c.svc.SampleRooms(ctx)
 				}
 			}
 		},

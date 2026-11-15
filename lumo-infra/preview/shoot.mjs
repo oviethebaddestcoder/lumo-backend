@@ -49,7 +49,7 @@ const sess = {
 };
 
 const results = [];
-async function shot(page, name, title, url, { wait = 2500, after } = {}) {
+async function shot(page, name, title, url, { wait = 2500, after, variant = "" } = {}) {
   const errors = [];
   const onErr = (e) => errors.push(String(e.message ?? e).slice(0, 300));
   const onConsole = (m) => {
@@ -61,8 +61,11 @@ async function shot(page, name, title, url, { wait = 2500, after } = {}) {
     if (url) await page.goto(url, { waitUntil: "networkidle", timeout: 30000 }).catch((e) => errors.push("navigation: " + e.message));
     if (after) await after(page);
     await sleep(wait);
+    // Responsive check: nothing may push the page wider than the screen.
+    const over = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth).catch(() => 0);
+    if (over > 1) errors.push(`horizontal overflow: page is ${over}px wider than the ${page.viewportSize().width}px screen`);
     await page.screenshot({ path: `${OUT}/${name}.png` });
-    results.push({ name, title, url: page.url(), errors });
+    results.push({ name, title, variant, url: page.url(), errors });
   } finally {
     page.off("pageerror", onErr);
     page.off("console", onConsole);
@@ -74,9 +77,28 @@ const browser = await chromium.launch({
   args: ["--autoplay-policy=no-user-gesture-required"],
 });
 
+// Each page is shot in every variant. The theme and size are switched on the
+// same page (emulated prefers-color-scheme + viewport) so a session is used
+// by one browser context only: refresh tokens rotate, and replaying an old
+// one is treated as theft.
+const WEB_VARIANTS = [
+  { key: "light", label: "Desktop, light", width: 1440, height: 900, scheme: "light" },
+  { key: "dark", label: "Desktop, dark", width: 1440, height: 900, scheme: "dark" },
+  { key: "phone", label: "Phone browser, light", width: 390, height: 844, scheme: "light" },
+];
+const APP_VARIANTS = [
+  { key: "light", label: "Phone, light", width: 390, height: 844, scheme: "light" },
+  { key: "dark", label: "Phone, dark", width: 390, height: 844, scheme: "dark" },
+  { key: "tablet", label: "Tablet, light", width: 820, height: 1180, scheme: "light" },
+];
+async function variant(page, v) {
+  await page.emulateMedia({ colorScheme: v.scheme });
+  await page.setViewportSize({ width: v.width, height: v.height });
+}
+
 // ---------- Web ----------
 {
-  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1.5, colorScheme: "dark" });
+  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1.5 });
   const page = await ctx.newPage();
   const as = async (k) => {
     await ctx.clearCookies();
@@ -88,34 +110,38 @@ const browser = await chromium.launch({
       { name: "lumo_signed_in", value: "1", domain: host, path: "/" },
     ]);
   };
-  await shot(page, "web-01-landing", "Landing page", `${WEB}/`);
-  await shot(page, "web-02-login", "Sign in (QR, phone, email, password, Google)", `${WEB}/login`);
-  await as("ada");
-  for (const [n, p, title] of [
-    ["03-studio-dashboard", "", "Creator Studio: dashboard"], ["04-studio-live", "/live", "Creator Studio: go live with OBS"],
-    ["05-studio-videos", "/videos", "Creator Studio: videos"], ["06-studio-earnings", "/earnings", "Creator Studio: earnings and bank cash-out"],
-    ["07-studio-audience", "/audience", "Creator Studio: audience"], ["08-studio-moderation", "/moderation", "Creator Studio: comment moderation"],
-    ["09-studio-settings", "/settings", "Creator Studio: settings"],
-  ]) {
-    await shot(page, `web-${n}`, title, `${WEB}/studio${p}`, { wait: 3000 });
+  const groups = [
+    [null, [["01-landing", "/", "Landing page"], ["02-login", "/login", "Sign in (QR, phone, email, password, Google)"]]],
+    ["ada", [
+      ["03-studio-dashboard", "/studio", "Creator Studio: dashboard"], ["04-studio-live", "/studio/live", "Creator Studio: go live with OBS"],
+      ["05-studio-videos", "/studio/videos", "Creator Studio: videos"], ["06-studio-earnings", "/studio/earnings", "Creator Studio: earnings and bank cash-out"],
+      ["07-studio-audience", "/studio/audience", "Creator Studio: audience"], ["08-studio-moderation", "/studio/moderation", "Creator Studio: comment moderation"],
+      ["09-studio-settings", "/studio/settings", "Creator Studio: settings"],
+    ]],
+    ["fan", [["10-wallet", "/wallet", "Buy coins (Paystack)"]]],
+    ["finance", [["11-finance-payouts", "/admin/payouts", "Finance: cash-out approvals"]]],
+    [null, [...(VIDEO ? [["12-share-video", `/v/${VIDEO}`, "Public video share page"]] : []), ["13-share-profile", "/@ada_cooks", "Public profile share page"]]],
+  ];
+  for (const [who, pages] of groups) {
+    if (who) await as(who);
+    else await ctx.clearCookies();
+    for (const v of WEB_VARIANTS) {
+      await variant(page, v);
+      for (const [n, p, title] of pages) await shot(page, `web-${v.key}-${n}`, title, `${WEB}${p}`, { wait: 2500, variant: v.label });
+    }
   }
-  await as("fan");
-  await shot(page, "web-10-wallet", "Buy coins (Paystack)", `${WEB}/wallet`);
-  await as("finance");
-  await shot(page, "web-11-finance-payouts", "Finance: cash-out approvals", `${WEB}/admin/payouts`);
-  const pub = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1.5, colorScheme: "dark" });
-  const pp = await pub.newPage();
-  if (VIDEO) await shot(pp, "web-12-share-video", "Public video share page", `${WEB}/v/${VIDEO}`, { wait: 3500 });
-  await shot(pp, "web-13-share-profile", "Public profile share page", `${WEB}/@ada_cooks`);
-  await pub.close();
   await ctx.close();
 }
 
 // ---------- Mobile app ----------
 {
-  const opts = { viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, colorScheme: "dark" };
+  const opts = { viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true };
   const out = await browser.newContext(opts);
-  await shot(await out.newPage(), "app-01-sign-in", "Sign in", `${APP}/sign-in`, { wait: 3000 });
+  const op = await out.newPage();
+  for (const v of APP_VARIANTS) {
+    await variant(op, v);
+    await shot(op, `app-${v.key}-01-sign-in`, "Sign in", `${APP}/sign-in`, { wait: 3000, variant: v.label });
+  }
   await out.close();
 
   const ctx = await browser.newContext(opts);
@@ -132,17 +158,20 @@ const browser = await chromium.launch({
     ["02-for-you", "/", "For You feed"], ["03-live", "/live", "Live discovery"], ["04-watch", "/watch", "Watch (long videos)"],
     ["05-me", "/me", "Profile (Me)"], ["06-wallet", "/wallet", "Wallet, levels and cash-out"], ["07-inbox", "/inbox", "Activity inbox"],
     ["08-messages", "/messages", "Messages"], ["09-search", "/search", "Search people and hashtags"], ["10-tag", "/tag/cooking", "Hashtag page"],
-    ["11-settings", "/settings", "Settings"], ["12-interests", "/settings/interests", "Content preferences"],
+    ["11-settings", "/settings", "Settings and appearance"], ["12-interests", "/settings/interests", "Content preferences"],
     ...(CREATOR ? [["13-creator-profile", `/user/${CREATOR}`, "Creator profile"]] : []), ["14-create", "/create", "Create: go live, short video, upload"],
     ["15-topics", "/topics", "Sign-up interest picker"],
   ];
-  for (const [n, p, title] of screens) await shot(page, `app-${n}`, title, `${APP}${p}`, { wait: 3500 });
-  await page.goto(`${APP}/messages`, { waitUntil: "networkidle" });
-  await sleep(2500);
-  const row = page.getByText("Ada's Kitchen").first();
-  if (await row.count()) {
-    await row.click();
-    await shot(page, "app-16-chat", "Chat", null, { wait: 3000 });
+  for (const v of APP_VARIANTS) {
+    await variant(page, v);
+    for (const [n, p, title] of screens) await shot(page, `app-${v.key}-${n}`, title, `${APP}${p}`, { wait: 3000, variant: v.label });
+    await page.goto(`${APP}/messages`, { waitUntil: "networkidle" });
+    await sleep(2500);
+    const row = page.getByText("Ada's Kitchen").first();
+    if (await row.count()) {
+      await row.click();
+      await shot(page, `app-${v.key}-16-chat`, "Chat", null, { wait: 3000, variant: v.label });
+    }
   }
   await ctx.close();
 }
@@ -151,7 +180,7 @@ await browser.close();
 fs.writeFileSync(`${OUT}/index.json`, JSON.stringify(results, null, 2));
 let failed = 0;
 for (const r of results) {
-  console.log(`${r.errors.length ? "FAIL" : "ok  "} ${r.name.padEnd(26)} ${r.title}${r.errors.length ? "\n     " + r.errors.join("\n     ") : ""}`);
+  console.log(`${r.errors.length ? "FAIL" : "ok  "} ${r.name.padEnd(34)} ${r.title}${r.errors.length ? "\n     " + r.errors.join("\n     ") : ""}`);
   if (r.errors.length) failed++;
 }
 console.log(`\n${results.length} screens, ${failed} with errors. Screenshots in ${OUT}`);

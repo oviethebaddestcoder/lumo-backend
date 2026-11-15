@@ -307,7 +307,9 @@ func (a *API) payoutAccount(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	httpx.JSON(w, http.StatusOK, map[string]any{"account": pa})
+	// The rate and minimum let apps show "≈ ₦…" before the creator asks;
+	// finance still sees and approves the exact amount.
+	httpx.JSON(w, http.StatusOK, map[string]any{"account": pa, "kobo_per_diamond": a.Svc.KoboPerDiamond, "min_diamonds": a.Svc.MinPayout})
 	return nil
 }
 
@@ -324,7 +326,9 @@ func (a *API) setPayoutAccount(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	httpx.JSON(w, http.StatusOK, map[string]any{"account": pa})
+	// The rate and minimum let apps show "≈ ₦…" before the creator asks;
+	// finance still sees and approves the exact amount.
+	httpx.JSON(w, http.StatusOK, map[string]any{"account": pa, "kobo_per_diamond": a.Svc.KoboPerDiamond, "min_diamonds": a.Svc.MinPayout})
 	return nil
 }
 
